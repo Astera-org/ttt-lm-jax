@@ -11,10 +11,10 @@ BS=256
 EXP_NAME=TODO
 EXP_DIR=TODO
 
-sudo mkdir -p /${EXP_DIR}/${EXP_NAME} && sudo chmod -R 777 ${EXP_DIR}/${EXP_NAME};
-cd ../..
+#sudo mkdir -p /${EXP_DIR}/${EXP_NAME} && sudo chmod -R 777 ${EXP_DIR}/${EXP_NAME};
 
-python3 -m ttt.train \
+
+uv run python3 -m ttt.train \
         --mesh_dim='!-1,1,1' \
         --dtype='fp32' \
         --total_steps=4800 \

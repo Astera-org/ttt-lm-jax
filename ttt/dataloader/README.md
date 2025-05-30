@@ -21,14 +21,12 @@ Our tokenization script is based on [FlashAttention](https://github.com/Dao-AILa
 
 **Pile:**
 ```
-export PYTHONPATH=$PWD:$PYTHONPATH
-pytest -q -s ttt/dataloader/tokenization.py -k "pile"
+uv run pytest -q -s ttt/dataloader/tokenization.py -k "pile"
 ```
 This takes around 20h on a 64-core CPU. The processed dataset is 716G.
 
 **Books3:**
 ```
-export PYTHONPATH=$PWD:$PYTHONPATH
-pytest -q -s ttt/dataloader/tokenization.py -k "books"
+uv run pytest -q -s ttt/dataloader/tokenization.py -k "books"
 ```
 This takes around 3h on a 64-core CPU. The processed dataset is 61G.
