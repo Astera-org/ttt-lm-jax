@@ -77,13 +77,13 @@ class TestLMDataModule:
 
     def test_books(self):
         batch_size = 8
-        dataset_name = "books3"
+        dataset_name = "SaylorTwift/the_pile_books3_minus_gutenberg" # "books3"
         dataset_config_name = None
         cache_dir = Path(
-            "/mnt/disks/persistent/books3_release"
+            "persistent/books3_release"
         )  # TODO: fill in your path to save the tokenized dataset
         raw_json_path = (
-            "/mnt/disks/persistent/lwm_raw/lwm_text_data/combined_books.jsonl"
+            "persistent/lwm_raw/lwm_text_data/combined_books.jsonl"
         )  # TODO: fill in your path that already stores the raw dataset in json format
         max_length = 2048
         num_workers = 1

@@ -24,7 +24,7 @@ class LMDataModule:
         tokenizer_name,
         dataset_config_name=None,
         max_length=1024,
-        cache_dir=None,
+        cache_dir="/home/zacharie/llama-2-books3/tokenizer_name-meta-llama",
         raw_json_path=None,
         val_ratio=0.0005,
         val_split_seed=2357,
@@ -83,12 +83,15 @@ class LMDataModule:
         cache_dir = None if self.cache_dir is None else self.cache_dir / self._cache_dir_name
 
         if cache_dir is not None:
+            print(f"Looking for cache at {str(cache_dir)}")
             if cache_dir.is_dir():
+                print(f"Cache found at {str(cache_dir)}")
                 return self._load_from_cache(cache_dir)
 
         if self.raw_json_path is not None:
             raw_datasets = load_dataset("json", data_files=self.raw_json_path)
         else:
+            print(f"Loading dataset {self.dataset_name} with config {self.dataset_config_name}")
             raw_datasets = load_dataset(self.dataset_name, self.dataset_config_name)
 
         # https://github.com/stanford-crfm/mistral/blob/main/src/corpora/auto.py

@@ -48,7 +48,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     save_checkpoint_freq=100,
     save_milestone_freq=0,
     dataset_path="",
-    dataset_name="the_pile",
+    dataset_name="SaylorTwift/the_pile_books3_minus_gutenberg",
     tokenizer_name="meta-llama/Llama-2-7b-hf",
     seq_length=2048,
     global_batch_size=1,
@@ -276,6 +276,7 @@ def initialize_or_resume(
     train_state, restored_params = None, None
     if FLAGS.resume_exp_name != "":
         assert FLAGS.load_part in ["trainstate", "trainstate_params"]
+        print(f"Resuming from experiment: {FLAGS.resume_exp_name}...")
         ckpt_resume_dir = (
             FLAGS.load_part
             + "::"
@@ -308,8 +309,10 @@ def initialize_or_resume(
             train_loader.sampler.is_rollback = True
 
     if train_state is None and restored_params is None:
+        print("No checkpoint found, initializing from scratch...")
         train_state = sharded_init_fn(next_rng())
     elif train_state is None and restored_params is not None:
+        print("Checkpoint found, initializing train state from params...")
         train_state = sharded_create_trainstate_from_params(restored_params)
         del restored_params
 
@@ -317,6 +320,9 @@ def initialize_or_resume(
 
 
 def main(argv):
+
+
+
     JaxDistributedConfig.initialize(FLAGS.jax_distributed)
     variant = mlxu.get_user_flags(FLAGS, FLAGS_DEF)
     flags_config_dict = mlxu.user_flags_to_config_dict(FLAGS, FLAGS_DEF)
@@ -369,6 +375,9 @@ def main(argv):
     model_config.max_sequence_length = seq_length
     flags_config_dict.model_config = model_config
 
+    mesh = model_config.get_jax_mesh(FLAGS.mesh_dim)
+
+
     # Create WandB run and checkpointer
     if master_process:
         wandb.init(project="TTT-LM", config=flags_config_dict, name=FLAGS.exp_name)
@@ -399,9 +408,12 @@ def main(argv):
         checkpointer, gather_fns, variant, flags_config_dict, model_config, global_batch_size
     )
 
-    mesh = model_config.get_jax_mesh(FLAGS.mesh_dim)
+    print(f"Using mesh: {mesh}")
     with mesh:
+
         sharded_rng = next_rng()
+
+        
 
         start_step, train_state, train_loader = initialize_or_resume(
             checkpointer,
@@ -413,29 +425,8 @@ def main(argv):
             FLAGS,
         )
 
-        if FLAGS.eval_mode:
-            eval_step = make_eval_step_fn(model, model_config)
-            sharded_eval_step = pjit(
-                eval_step,
-                in_shardings=(train_state_partition, PS(), PS()),
-                out_shardings=(PS(), PS()),
-                donate_argnums=(1,),
-            )
-
-            val_loader = data_module.val_dataloader()
-            eval_metric_list = []
-
-            for eval_batch in tqdm(val_loader, disable=not master_process):
-                for k in eval_batch.keys():
-                    eval_batch[k] = eval_batch[k].numpy()
-                sharded_rng, eval_metrics = sharded_eval_step(train_state, sharded_rng, eval_batch)
-                eval_metric_list.append(eval_metrics)
-
-            val_loss_avg = average_metrics(process_allgather(eval_metric_list))["eval_loss"].item()
-            master_print(f"Eval Loss: {val_loss_avg:.4f}")
-            exit(0)
-
         train_loader_iterator = iter(train_loader)
+
 
         for step in tqdm(
             range(start_step, FLAGS.total_steps + 1),
