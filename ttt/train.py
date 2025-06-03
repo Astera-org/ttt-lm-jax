@@ -64,6 +64,10 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     is_rollback_reshuffle=False,
 )
 
+jax.config.update("jax_compilation_cache_dir", "jax_cache")
+jax.config.update("jax_persistent_cache_min_entry_size_bytes", 1024 * 1024)  # 1MB minimum
+
+
 
 def make_train_step_fn(model, optimizer_info, model_config, accum_steps=1):
 
