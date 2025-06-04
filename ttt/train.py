@@ -62,10 +62,11 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     resume_step="",
     jax_distributed=JaxDistributedConfig.get_default_config(),
     is_rollback_reshuffle=False,
+    ttt_implementation="ttt_layer",  # Add this flag
 )
 
-jax.config.update("jax_compilation_cache_dir", "jax_cache")
-jax.config.update("jax_persistent_cache_min_entry_size_bytes", 1024 * 1024)  # 1MB minimum
+# jax.config.update("jax_compilation_cache_dir", "jax_cache")
+# jax.config.update("jax_persistent_cache_min_entry_size_bytes", 1024 * 1024)  # 1MB minimum
 
 
 
@@ -375,6 +376,10 @@ def main(argv):
                 setattr(model_config, key, value)
             else:
                 raise KeyError(f"Update key {key} not in model_config")
+    
+    # Set ttt_implementation from flags
+    model_config.ttt_implementation = FLAGS.ttt_implementation
+    
     model_config.vocab_size = data_module.vocab_size
     model_config.max_sequence_length = seq_length
     flags_config_dict.model_config = model_config

@@ -1,6 +1,7 @@
 import os
 from typing import Any, Dict, List, Optional, Tuple, Union
 import json
+import importlib
 
 import numpy as np
 import jax
@@ -21,7 +22,39 @@ from mlxu import function_args_to_config, load_pickle, open_file
 
 from ttt.models.bpt import blockwise_ffn, blockwise_attn
 from ttt.infra.jax_utils import with_sharding_constraint, get_jax_mesh, get_gradient_checkpoint_policy
-from ttt.models.ttt_layer import TTTLinear, TTTMLP, TTTLinearBase, TTTMLPBase, precompute_freqs_cis, apply_rotary_emb
+from ttt.models.ttt_layer import precompute_freqs_cis, apply_rotary_emb
+
+
+def get_ttt_layer_module(ttt_implementation):
+    """
+    Dynamically import TTT layer classes from the specified implementation module.
+    
+    Args:
+        ttt_implementation: Name of the module to import (e.g., "ttt_layer", "ttt_layer_v2", "my_custom_ttt")
+    
+    Returns:
+        Tuple of (TTTLinear, TTTMLP, TTTLinearBase, TTTMLPBase) classes
+    """
+    try:
+        # Dynamically import the specified module
+        module_path = f"ttt.models.{ttt_implementation}"
+        ttt_module = importlib.import_module(module_path)
+        
+        # Extract the required classes
+        TTTLinear = getattr(ttt_module, 'TTTLinear')
+        TTTMLP = getattr(ttt_module, 'TTTMLP')
+        TTTLinearBase = getattr(ttt_module, 'TTTLinearBase')
+        TTTMLPBase = getattr(ttt_module, 'TTTMLPBase')
+        
+        return TTTLinear, TTTMLP, TTTLinearBase, TTTMLPBase
+        
+    except (ImportError, AttributeError) as e:
+        # Fallback to default implementation if module not found or missing classes
+        print(f"Warning: Could not import from {ttt_implementation}: {e}")
+        print(f"Falling back to default ttt_layer implementation")
+        
+        from ttt.models.ttt_layer import TTTLinear, TTTMLP, TTTLinearBase, TTTMLPBase
+        return TTTLinear, TTTMLP, TTTLinearBase, TTTMLPBase
 
 
 @flax.struct.dataclass
@@ -218,6 +251,7 @@ class ModelConfig(PretrainedConfig):
         scan_mlp_chunk_size=1024,
         fcm_min_ratio=0.0,
         fcm_max_ratio=0.0,
+        ttt_implementation="ttt_layer",
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -243,6 +277,7 @@ class ModelConfig(PretrainedConfig):
         self.scan_mlp_chunk_size = scan_mlp_chunk_size
         self.fcm_min_ratio = fcm_min_ratio
         self.fcm_max_ratio = fcm_max_ratio
+        self.ttt_implementation = ttt_implementation
         super().__init__(
             bos_token_id=bos_token_id, eos_token_id=eos_token_id, tie_word_embeddings=tie_word_embeddings, **kwargs
         )
@@ -620,6 +655,8 @@ class Block(nn.Module):
     precision: Optional[Union[jax.lax.Precision, str]] = None
 
     def setup(self) -> None:
+        TTTLinear, TTTMLP, TTTLinearBase, TTTMLPBase = get_ttt_layer_module(self.config.ttt_implementation)
+
         if self.config.seq_modeling_block == "self_attention":
             seq_modeling_block = Attention
 
