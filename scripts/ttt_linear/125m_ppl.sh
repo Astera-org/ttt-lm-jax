@@ -3,16 +3,16 @@ DATA_PATH="/home/zacharie/llama-2-books3"
 # DATA_NAME="SaylorTwift/the_pile_books3_minus_gutenberg"
 
 SEQ_LEN=2048
-BS=16
+BS=32
 
-GRAD_ACCUM=16 # 256/16
+GRAD_ACCUM=8 # 256/16
 
 # Experiment details
 
 EXP_DIR=./current_exp
 mkdir -p ${EXP_DIR}
 
-export TTT_IMPLEMENTATION="stateful_ttt_layer"
+export TTT_IMPLEMENTATION="ttt_layer"
 
 EXP_NAME="${TTT_IMPLEMENTATION}-linear-125m-books-2k"
 
@@ -61,6 +61,11 @@ uv run python3 -m ttt.train  \
         --optimizer.adamw_optimizer.lr_warmup_steps=480 \
         --optimizer.adamw_optimizer.lr_decay_steps=4800
 
+
+if [ $? -ne 0 ]; then
+    echo "Training failed. Exiting script."
+    exit 1
+fi
 
 echo "Training complete. Now running perplexity evaluation..."
 
