@@ -1,7 +1,7 @@
 #!/bin/bash
-
 DATA_PATH="/home/zacharie/llama-2-books3"
 # DATA_NAME="SaylorTwift/the_pile_books3_minus_gutenberg"
+
 SEQ_LEN=2048
 BS=16
 
@@ -12,7 +12,7 @@ GRAD_ACCUM=16 # 256/16
 EXP_DIR=./current_exp
 mkdir -p ${EXP_DIR}
 
-export TTT_IMPLEMENTATION="ttt_layer_nobias_kx" #_orthonorm_hardnorm
+export TTT_IMPLEMENTATION="stateful_ttt_layer"
 
 EXP_NAME="${TTT_IMPLEMENTATION}-linear-125m-books-2k"
 
@@ -20,7 +20,23 @@ EXP_NAME="${TTT_IMPLEMENTATION}-linear-125m-books-2k"
 # cp -r ${PRETRAINED}/${EXP_NAME}  ${EXP_DIR}/${EXP_NAME}
 # RESUME_EXP_NAME="ttt-linear-125m-books-2k"
 
-export CUDA_VISIBLE_DEVICES=0
+
+
+LOAD_MODEL_CONFIG='125m-TTT'
+
+
+
+function get_update_model_config {
+        local use_cache=$1
+        echo "dict(use_cache=${use_cache}, mini_batch_size=16, ttt_implementation=\"${TTT_IMPLEMENTATION}\",seq_modeling_block='ttt_linear', ttt_base_lr=1.0)"
+        }
+
+# use the function to set the UPDATE_MODEL_CONFIG
+UPDATE_MODEL_CONFIG=$(get_update_model_config "False")
+
+
+export CUDA_VISIBLE_DEVICES=2
+
 
 uv run python3 -m ttt.train  \
         --mesh_dim='!1,-1,1' \
@@ -28,8 +44,8 @@ uv run python3 -m ttt.train  \
         --total_steps=4800 \
         --save_checkpoint_freq=1000 \
         --save_milestone_freq=2000 \
-        --load_model_config='125m-TTT' \
-        --update_model_config="dict(mini_batch_size=64,ttt_implementation=\"${TTT_IMPLEMENTATION}\",seq_modeling_block='ttt_linear', ttt_base_lr=1.0)" \
+        --load_model_config=${LOAD_MODEL_CONFIG} \
+        --update_model_config="${UPDATE_MODEL_CONFIG}" \
         --dataset_path=${DATA_PATH} \
         --dataset_name=${DATA_NAME} \
         --seq_length=${SEQ_LEN} \
@@ -46,6 +62,18 @@ uv run python3 -m ttt.train  \
         --optimizer.adamw_optimizer.lr_decay_steps=4800
 
 
-# TODO: launch visualization
+echo "Training complete. Now running perplexity evaluation..."
 
-# perplexity_progression_ttt-linear-125m-books-2k_2048seqsize_4096compsize_327680tokens_logx_lineary_endtoken
+UPDATE_MODEL_CONFIG=$(get_update_model_config "True")
+
+
+uv run python3 -m test_perplexity  \
+        --mesh_dim='!1,-1,1' \
+        --dtype='fp32' \
+        --load_model_config=${LOAD_MODEL_CONFIG} \
+        --update_model_config="${UPDATE_MODEL_CONFIG}" \
+        --exp_dir=${EXP_DIR} \
+        --exp_name=${EXP_NAME} \
+        --compute_chunk_size=8192
+
+

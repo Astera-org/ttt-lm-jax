@@ -341,6 +341,7 @@ class TTTBase(nn.Module):
         deterministic: bool = True,
         output_ttt_stats: bool = False,
         ttt_lr_mult=1.0,
+        reset_cache = 1.0,
     ):
         self.config.output_ttt_stats = output_ttt_stats
         del deterministic

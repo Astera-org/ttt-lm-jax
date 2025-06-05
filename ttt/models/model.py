@@ -35,26 +35,21 @@ def get_ttt_layer_module(ttt_implementation):
     Returns:
         Tuple of (TTTLinear, TTTMLP, TTTLinearBase, TTTMLPBase) classes
     """
-    try:
-        # Dynamically import the specified module
-        module_path = f"ttt.models.{ttt_implementation}"
-        ttt_module = importlib.import_module(module_path)
-        
-        # Extract the required classes
-        TTTLinear = getattr(ttt_module, 'TTTLinear')
-        TTTMLP = getattr(ttt_module, 'TTTMLP')
-        TTTLinearBase = getattr(ttt_module, 'TTTLinearBase')
-        TTTMLPBase = getattr(ttt_module, 'TTTMLPBase')
-        
-        return TTTLinear, TTTMLP, TTTLinearBase, TTTMLPBase
-        
-    except (ImportError, AttributeError) as e:
-        # Fallback to default implementation if module not found or missing classes
-        print(f"Warning: Could not import from {ttt_implementation}: {e}")
-        print(f"Falling back to default ttt_layer implementation")
-        
-        from ttt.models.ttt_layer import TTTLinear, TTTMLP, TTTLinearBase, TTTMLPBase
-        return TTTLinear, TTTMLP, TTTLinearBase, TTTMLPBase
+
+
+    # Dynamically import the specified module
+    module_path = f"ttt.models.{ttt_implementation}"
+    ttt_module = importlib.import_module(module_path)
+    
+    # Extract the required classes
+    TTTLinear = getattr(ttt_module, 'TTTLinear')
+    TTTMLP = getattr(ttt_module, 'TTTMLP')
+    TTTLinearBase = getattr(ttt_module, 'TTTLinearBase')
+    TTTMLPBase = getattr(ttt_module, 'TTTMLPBase')
+    
+    return TTTLinear, TTTMLP, TTTLinearBase, TTTMLPBase
+    
+
 
 
 @flax.struct.dataclass
@@ -80,7 +75,7 @@ CONFIGS = {
         "max_sequence_length": 2048,
         "initializer_range": 0.02,
         "rms_norm_eps": 1e-6,
-        "use_cache": True,
+       # "use_cache": True,
         "tie_word_embeddings": True,
         "seq_modeling_block": "self_attention",
         "use_rotary_emb": "sequence",
@@ -96,7 +91,7 @@ CONFIGS = {
         "max_sequence_length": 2048,
         "initializer_range": 0.02,
         "rms_norm_eps": 1e-6,
-        "use_cache": True,
+       # "use_cache": True,
         "tie_word_embeddings": True,
         "seq_modeling_block": "ttt_linear",
         "ttt_base_lr": 1.0,
@@ -117,7 +112,7 @@ CONFIGS = {
         "max_sequence_length": 2048,
         "initializer_range": 0.02,
         "rms_norm_eps": 1e-6,
-        "use_cache": True,
+    #    "use_cache": True,
         "tie_word_embeddings": True,
         "seq_modeling_block": "self_attention",
         "use_rotary_emb": "sequence",
@@ -133,7 +128,7 @@ CONFIGS = {
         "max_sequence_length": 2048,
         "initializer_range": 0.02,
         "rms_norm_eps": 1e-6,
-        "use_cache": True,
+    #    "use_cache": True,
         "tie_word_embeddings": True,
         "seq_modeling_block": "ttt_linear",
         "ttt_base_lr": 1.0,
@@ -154,7 +149,7 @@ CONFIGS = {
         "max_sequence_length": 2048,
         "initializer_range": 0.02,
         "rms_norm_eps": 1e-6,
-        "use_cache": True,
+    #    "use_cache": True,
         "tie_word_embeddings": True,
         "seq_modeling_block": "self_attention",
         "use_rotary_emb": "sequence",
@@ -170,7 +165,7 @@ CONFIGS = {
         "max_sequence_length": 2048,
         "initializer_range": 0.02,
         "rms_norm_eps": 1e-6,
-        "use_cache": True,
+    #    "use_cache": True,
         "tie_word_embeddings": True,
         "seq_modeling_block": "ttt_linear",
         "ttt_base_lr": 1.0,
@@ -191,7 +186,7 @@ CONFIGS = {
         "max_sequence_length": 2048,
         "initializer_range": 0.02,
         "rms_norm_eps": 1e-6,
-        "use_cache": True,
+     #   "use_cache": True,
         "tie_word_embeddings": True,
         "seq_modeling_block": "self_attention",
         "use_rotary_emb": "sequence",
@@ -207,7 +202,7 @@ CONFIGS = {
         "max_sequence_length": 2048,
         "initializer_range": 0.02,
         "rms_norm_eps": 1e-6,
-        "use_cache": True,
+    #    "use_cache": True,
         "tie_word_embeddings": True,
         "seq_modeling_block": "ttt_linear",
         "ttt_base_lr": 1.0,
@@ -233,7 +228,7 @@ class ModelConfig(PretrainedConfig):
         max_sequence_length=2048,
         rms_norm_eps=1e-6,
         initializer_range=0.02,
-        use_cache=True,
+        use_cache=False,
         bos_token_id=1,
         eos_token_id=2,
         resid_pdrop=0.0,
@@ -278,6 +273,7 @@ class ModelConfig(PretrainedConfig):
         self.fcm_min_ratio = fcm_min_ratio
         self.fcm_max_ratio = fcm_max_ratio
         self.ttt_implementation = ttt_implementation
+
         super().__init__(
             bos_token_id=bos_token_id, eos_token_id=eos_token_id, tie_word_embeddings=tie_word_embeddings, **kwargs
         )
@@ -319,6 +315,13 @@ class ModelConfig(PretrainedConfig):
             ("seq_modeling_block/ttt_dense_1", PS(None)),
             ("seq_modeling_block/ttt_bias_0", PS(None)),
             ("seq_modeling_block/ttt_bias_1", PS(None)),
+
+
+            # TTT and Pre-Conv caches - not sharded for simplicity
+            ("seq_modeling_block/ttt_cache/weights", PS(None)),
+            ("seq_modeling_block/conv_cache/states", PS(None)),
+            ("conv/pre_conv_cache/states", PS(None)),
+
             # SwiGLU MLP
             ("feed_forward/w1/kernel", PS("fsdp", "mp")),
             ("feed_forward/w2/kernel", PS("mp", "fsdp")),
@@ -443,10 +446,119 @@ class ConvModule(nn.Module):
             self.config.hidden_size, eps=self.config.rms_norm_eps, dtype=self.dtype, param_dtype=self.param_dtype
         )
 
-    def __call__(self, hidden_states):
+        # Only create cache variable if use_cache is enabled
+        if self.config.use_cache:
+            self.pre_conv_cache = self.variable('pre_conv_cache', 'states', lambda: ())
+
+    def _init_pre_conv_cache_if_needed(self, batch_size: int):
+        """Initialize pre-conv cache if it doesn't exist or is empty."""
+        # Only initialize cache if use_cache is enabled
+        if not self.config.use_cache:
+            return
+            
+        if self.is_mutable_collection('pre_conv_cache') and self.pre_conv_cache.value == ():
+            conv_kernel_size = getattr(self.config, 'conv_width', 4)
+            
+            # Initialize cache to store last (kernel_size - 1) tokens from previous chunk
+            conv_states = {
+                'cached_tokens': jnp.zeros((batch_size, conv_kernel_size - 1, self.config.hidden_size), dtype=self.dtype),
+            }
+            self.pre_conv_cache.value = conv_states
+
+    def _apply_causal_conv_with_cache(self, x, conv_layer, batch_size):
+        """Apply causal convolution with proper caching for chunk-wise processing."""
+        
+        # If caching is disabled, just apply normal convolution
+        if not self.config.use_cache:
+            return conv_layer(x)
+        
+        # Handle cache logic only if cache exists and we're not in initialization
+        if not self.is_mutable_collection('pre_conv_cache'):
+            # No cache available, just apply normal convolution
+            return conv_layer(x)
+            
+        # Initialize cache if needed
+        if self.pre_conv_cache.value == ():
+            self._init_pre_conv_cache_if_needed(batch_size)
+        
+        cache = self.pre_conv_cache.value
+        if cache == ():
+            return conv_layer(x)
+            
+        conv_kernel_size = getattr(self.config, 'conv_width', 4)
+        cached_tokens = cache.get('cached_tokens')
+        
+        # Always use the same approach: concatenate cached tokens + input, then extract relevant portion
+        extended_input = jnp.concatenate([cached_tokens, x], axis=1)
+        extended_output = conv_layer(extended_input)
+        cache_len = cached_tokens.shape[1]
+        conv_output = extended_output[:, cache_len:, :]
+        
+        # Update cached tokens with the last (kernel_size - 1) tokens from current input
+        seq_len = x.shape[1]
+        cache_size = conv_kernel_size - 1
+        
+        if seq_len >= cache_size:
+            new_cached_tokens = x[:, -cache_size:, :]
+        else:
+            # If input is shorter than cache size, combine with existing cache
+            tokens_needed_from_cache = cache_size - seq_len
+            new_cached_tokens = jnp.concatenate([
+                cached_tokens[:, -tokens_needed_from_cache:, :],
+                x
+            ], axis=1)
+        
+        # Update cache
+        updated_cache = {
+            'cached_tokens': new_cached_tokens,
+        }
+        self.pre_conv_cache.value = updated_cache
+        
+        return conv_output
+
+    def reset_pre_conv_cache(self):
+        """Reset pre-conv cache for new sequences. Call this between different sequences."""
+        # Only reset cache if use_cache is enabled
+        if not self.config.use_cache:
+            return
+            
+        if self.is_mutable_collection('pre_conv_cache') and self.pre_conv_cache.value != ():
+            batch_size = None
+            conv_kernel_size = getattr(self.config, 'conv_width', 4)
+            
+            # Try to get batch size from existing cache
+            cache = self.pre_conv_cache.value
+            if isinstance(cache, dict) and 'cached_tokens' in cache:
+                cached_tokens = cache['cached_tokens']
+                if isinstance(cached_tokens, jnp.ndarray) and cached_tokens.ndim >= 1:
+                    batch_size = cached_tokens.shape[0]
+            
+            if batch_size is not None:
+                # Reset cache with zeros
+                reset_cache = {
+                    'cached_tokens': jnp.zeros((batch_size, conv_kernel_size - 1, self.config.hidden_size), dtype=self.dtype),
+                }
+                self.pre_conv_cache.value = reset_cache
+            else:
+                # Fallback: just mark as uninitialized
+                self.pre_conv_cache.value = ()
+
+    def __call__(self, hidden_states, reset_cache: bool = False):
+        # Reset cache if requested (useful for new sequences)
+        if reset_cache:
+            self.reset_pre_conv_cache()
+
+        # Initialize cache if needed (only if use_cache is enabled)
+        if self.config.use_cache:
+            batch_size = hidden_states.shape[0]
+            self._init_pre_conv_cache_if_needed(batch_size)
+
         x = hidden_states
         x = self.conv_norm(x)
-        x = self.conv1(x)
+        
+        # Apply convolution with proper chunk-wise caching (conditional on use_cache)
+        x = self._apply_causal_conv_with_cache(x, self.conv1, hidden_states.shape[0])
+        
         return x
 
 
@@ -725,9 +837,11 @@ class Block(nn.Module):
         output_attentions: bool = False,
         output_ttt_stats: bool = False,
         fcm_mask: Optional[jnp.ndarray] = None,
+        reset_cache: bool = False,
     ):
         if self.config.pre_conv:
-            conv_outputs = self.conv(hidden_states)
+         #   conv_outputs = self.conv(hidden_states)
+            conv_outputs = self.conv(hidden_states, reset_cache=reset_cache)
             hidden_states = hidden_states + conv_outputs
 
         hidden_states_pre_normed = self.seq_norm(hidden_states)
@@ -744,7 +858,7 @@ class Block(nn.Module):
             )
         else:
             seq_modeling_outputs = self.seq_modeling_block(
-                hidden_states_pre_normed, input_ids, position_ids, deterministic, output_ttt_stats, ttt_lr_mult
+                hidden_states_pre_normed, input_ids, position_ids, deterministic, output_ttt_stats, ttt_lr_mult, reset_cache=reset_cache
             )
 
         seq_modeling_output = seq_modeling_outputs[0]
@@ -781,7 +895,7 @@ class BlockCollection(nn.Module):
         block = Block
         if self.config.remat_block != "":
             block = remat(
-                Block, static_argnums=(5, 6, 7, 8), policy=get_gradient_checkpoint_policy(self.config.remat_block)
+                Block, static_argnums=(5, 6, 7, 8,9,10), policy=get_gradient_checkpoint_policy(self.config.remat_block)
             )
         self.blocks = [
             block(self.config, name=str(i), dtype=self.dtype, param_dtype=self.param_dtype, precision=self.precision)
@@ -801,6 +915,7 @@ class BlockCollection(nn.Module):
         output_hidden_states: bool = False,
         output_ttt_stats: bool = False,
         return_dict: bool = True,
+        reset_cache: bool = False,  # New parameter for cache reset
     ):
         all_attentions = () if output_attentions else None
         all_hidden_states = () if output_hidden_states else None
@@ -819,6 +934,7 @@ class BlockCollection(nn.Module):
             fcm_mask = fcm_mask.astype("bool")
         else:
             fcm_mask = None
+        
 
         for block in self.blocks:
             if output_hidden_states:
@@ -835,6 +951,7 @@ class BlockCollection(nn.Module):
                 output_attentions,
                 output_ttt_stats,
                 fcm_mask,
+                 reset_cache,
             )
             hidden_states = layer_outputs[0]
 
@@ -881,6 +998,7 @@ class Model(nn.Module):
         output_hidden_states: bool = False,
         output_ttt_stats: bool = False,
         return_dict: bool = True,
+        reset_cache=False,
     ):
         input_embeds = self.wte(input_ids.astype("i4"))
         hidden_states = self.dropout(input_embeds, deterministic=deterministic)
@@ -896,6 +1014,7 @@ class Model(nn.Module):
             output_hidden_states=output_hidden_states,
             output_ttt_stats=output_ttt_stats,
             return_dict=return_dict,
+                        reset_cache=reset_cache,
         )
         hidden_states = outputs[0]
         hidden_states = self.ln_f(hidden_states)
@@ -943,6 +1062,7 @@ class CausalLM(nn.Module):
         output_hidden_states: bool = False,
         output_ttt_stats: bool = False,
         return_dict: bool = True,
+        reset_cache: bool = False,  # New parameter for cache reset
     ):
         batch_size, seq_length = input_ids.shape
         if attention_mask is None:
@@ -962,6 +1082,7 @@ class CausalLM(nn.Module):
             output_hidden_states=output_hidden_states,
             output_ttt_stats=output_ttt_stats,
             return_dict=return_dict,
+             reset_cache=reset_cache,
         )
 
         hidden_states = outputs[0]

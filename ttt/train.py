@@ -36,6 +36,7 @@ from ttt.infra.jax_utils import (
 )
 
 
+
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     seed=0,
     mesh_dim="-1,64,1",
@@ -62,7 +63,6 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     resume_step="",
     jax_distributed=JaxDistributedConfig.get_default_config(),
     is_rollback_reshuffle=False,
-    ttt_implementation="ttt_layer",  # Add this flag
 )
 
 # jax.config.update("jax_compilation_cache_dir", "jax_cache")
@@ -128,6 +128,7 @@ def make_train_step_fn(model, optimizer_info, model_config, accum_steps=1):
                     return loss, ttt_stats
 
                 grad_fn = jax.value_and_grad(loss_and_accuracy, has_aux=True)
+                print('train_state.params', train_state.params)
                 (loss, ttt_stats), grads = grad_fn(train_state.params)
                 sum_grads = tree_map(lambda x, y: x + y, sum_grads, grads)
                 carry_new = {"sum_grads": sum_grads}
@@ -371,14 +372,13 @@ def main(argv):
         raise RuntimeError(f"model_config must be specified")
     if FLAGS.update_model_config:
         update_dic = eval(FLAGS.update_model_config)
+        print("update_dic",update_dic)
         for key, value in update_dic.items():
             if hasattr(model_config, key):
                 setattr(model_config, key, value)
             else:
                 raise KeyError(f"Update key {key} not in model_config")
     
-    # Set ttt_implementation from flags
-    model_config.ttt_implementation = FLAGS.ttt_implementation
     
     model_config.vocab_size = data_module.vocab_size
     model_config.max_sequence_length = seq_length

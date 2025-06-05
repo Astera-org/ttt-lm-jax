@@ -138,3 +138,6 @@ current_exp/
 jax_cache/
 
 pile_books3_minus_gutenberg/
+
+
+data/
