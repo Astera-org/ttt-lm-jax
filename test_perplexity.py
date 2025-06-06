@@ -39,7 +39,7 @@ from ttt.infra.jax_utils import (
 # Configuration
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     seed=0,
-    mesh_dim="-1,64,1",
+    mesh_dim="1,-1,1",
     dtype="fp32",
     load_model_config="",
     update_model_config="",
@@ -53,7 +53,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     num_books=10,
     tokens_per_book=327680,  # 32768 * 10
     ppl_seq_size=2048,
-    skip_start_chars=4096,
+    skip_start_chars=1024,
     debug_mode=False,
 )
 
@@ -238,7 +238,7 @@ class BookLoader:
     
     @staticmethod
     def load_books(books_dir: str, tokenizer: Any, num_books: int, 
-                   tokens_per_book: int, skip_start_chars: int = 4096) -> List[Tuple[str, str]]:
+                   tokens_per_book: int, skip_start_chars: int = 1024) -> List[Tuple[str, str]]:
         """
         Load books that meet the token requirements.
         
@@ -756,6 +756,8 @@ def setup_model_and_mesh(flags: Any) -> Tuple[Any, Any, Any, Any, Any]:
     model_config.vocab_size = len(tokenizer)
     model_config.eos_token_id = getattr(tokenizer, 'eos_token_id', 0)
     model_config.pad_token_id = tokenizer.pad_token_id
+
+    model_config.use_cache = True
     
     # Model creation
     model = CausalLM(model_config, dtype=get_float_dtype_by_name(flags.dtype))

@@ -292,8 +292,10 @@ class TTTBase(nn.Module):
         # Initialize TTT parameter cache if needed
 
         # check if has attribute `ttt_cache` and if it is mutable
-        if hasattr(self, 'ttt_cache') and self.is_mutable_collection('ttt_cache'):
-            print("Initializing TTT parameter cache with batched parameters.")
+       # if hasattr(self, 'ttt_cache') and self.is_mutable_collection('ttt_cache'):
+        if self.is_mutable_collection('ttt_cache') and hasattr(self, 'ttt_cache') and  self.ttt_cache.value == ():
+            print("Initializing TTT parameter cache.")
+
             
             batched_ttt_params = tree_map(lambda p: p[None].repeat(B, axis=0) if isinstance(p, jnp.ndarray) else p, self.ttt_params)
             self.ttt_cache.value = batched_ttt_params
@@ -301,8 +303,7 @@ class TTTBase(nn.Module):
    #     self.ttt_cache.value = self.ttt_params
 
         # Initialize conv_cache if needed
-        if hasattr(self, 'conv_cache') and self.is_mutable_collection('conv_cache'):
-             self._init_conv_cache_if_needed(B)
+     #   self._init_conv_cache_if_needed(B)
 
         self.config.output_ttt_stats = output_ttt_stats
         del deterministic
@@ -319,7 +320,7 @@ class TTTBase(nn.Module):
         _ttt_loss_mse_init, _ttt_loss_mse_step_0, _ttt_loss_mse_step_1, ttt_params_final = ttt_stats
 
         # Update TTT cache with the final parameters from the scan
-        if hasattr(self, 'ttt_cache') and self.is_mutable_collection('ttt_cache'):
+        if self.is_mutable_collection('ttt_cache') and hasattr(self, 'ttt_cache') :
             print("Updating TTT parameter cache with final parameters.", len(ttt_params_final))
             self.ttt_cache.value = ttt_params_final
         
@@ -468,7 +469,7 @@ class TTTBase(nn.Module):
 
         @partial(vmap, axis_name="batch")
         def update_embed(XQ, XK, XV, eta,ttt_params=None):
-            print("Using TTT with parameters:", ttt_params)
+      #      print("Using TTT with parameters:", ttt_params)
             @partial(vmap, axis_name="head")
             def parallelize_over_heads(XQ, XK, XV, eta, ttt_params_init, ttt_norm_params):
                 def compute_mini_batch(ttt_params_mini_batch_init, inputs):

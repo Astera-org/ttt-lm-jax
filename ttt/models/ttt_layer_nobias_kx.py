@@ -361,7 +361,7 @@ class TTTLinearBase(TTTBase):
         self.W1 = self.param(
             "ttt_dense_0",
             nn.initializers.normal(self.config.initializer_range),
-            (self.num_heads, self.head_dim, self.head_dim),
+            (self.num_heads, self.head_dim*2, self.head_dim*2),
             self.param_dtype,
         )
         # No bias parameter b1
