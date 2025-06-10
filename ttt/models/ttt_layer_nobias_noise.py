@@ -569,6 +569,14 @@ class TTTLinearBase(TTTBase):
             else:
                 ttt_loss_mse_step_1 = None
 
+            
+            # add normal noise to the last W1_bar_last
+
+            noise = jax.random.normal(
+                jax.random.PRNGKey(0), W1_bar_last.shape, dtype=self.param_dtype
+            ) * 0.01  # 
+            W1_bar_last += noise
+
             ttt_params_mini_batch_new = (W1_bar_last,)
 
             return (

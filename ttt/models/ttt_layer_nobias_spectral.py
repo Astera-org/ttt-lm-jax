@@ -22,6 +22,89 @@ from ttt.infra.jax_utils import with_sharding_constraint, get_gradient_checkpoin
 Axes = Union[int, Sequence[int]]
 
 
+def spectral_normalize(weight_matrix: jnp.ndarray, eps: float = 1e-12) -> jnp.ndarray:
+    """
+    Apply spectral normalization to a weight matrix.
+    
+    Args:
+        weight_matrix: Weight matrix to normalize
+        eps: Small epsilon for numerical stability
+        
+    Returns:
+        Spectrally normalized weight matrix
+    """
+    # Reshape to 2D if needed (for multi-head case, we normalize each head separately)
+    original_shape = weight_matrix.shape
+    if len(original_shape) > 2:
+        # For multi-head weights, apply spectral norm to each head matrix
+        return jnp.stack([
+            spectral_normalize(weight_matrix[i], eps) 
+            for i in range(original_shape[0])
+        ])
+    
+    # Compute spectral norm using SVD
+    # For efficiency in practice, you might want to use power iteration instead
+    u, s, vt = jnp.linalg.svd(weight_matrix, full_matrices=False)
+    spectral_norm = s[0]  # Largest singular value
+    
+    # Normalize by spectral norm
+    normalized_weight = weight_matrix / jnp.maximum(spectral_norm, eps)
+    return normalized_weight
+
+
+def spectral_normalize_power_iteration(weight_matrix: jnp.ndarray, 
+                                     u_vector: Optional[jnp.ndarray] = None,
+                                     num_iterations: int = 1,
+                                     eps: float = 1e-12) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Apply spectral normalization using power iteration (more efficient).
+    
+    Args:
+        weight_matrix: Weight matrix to normalize
+        u_vector: Left singular vector from previous iteration (for caching)
+        num_iterations: Number of power iterations
+        eps: Small epsilon for numerical stability
+        
+    Returns:
+        Tuple of (normalized_weight, updated_u_vector)
+    """
+    original_shape = weight_matrix.shape
+    if len(original_shape) > 2:
+        # For multi-head weights, apply to each head
+        normalized_weights = []
+        updated_u_vectors = []
+        
+        for i in range(original_shape[0]):
+            u_i = u_vector[i] if u_vector is not None else None
+            norm_w, u_i = spectral_normalize_power_iteration(
+                weight_matrix[i], u_i, num_iterations, eps
+            )
+            normalized_weights.append(norm_w)
+            updated_u_vectors.append(u_i)
+            
+        return jnp.stack(normalized_weights), jnp.stack(updated_u_vectors)
+    
+    # Initialize u vector if not provided
+    if u_vector is None:
+        u_vector = jax.random.normal(jax.random.PRNGKey(0), (weight_matrix.shape[0],))
+        u_vector = u_vector / jnp.linalg.norm(u_vector)
+    
+    # Power iteration
+    for _ in range(num_iterations):
+        v = weight_matrix.T @ u_vector
+        v = v / jnp.linalg.norm(v)
+        u_vector = weight_matrix @ v
+        u_vector = u_vector / jnp.linalg.norm(u_vector)
+    
+    # Compute spectral norm
+    spectral_norm = jnp.dot(u_vector, weight_matrix @ v)
+    
+    # Normalize weight matrix
+    normalized_weight = weight_matrix / jnp.maximum(spectral_norm, eps)
+    
+    return normalized_weight, u_vector
+
+
 def scan_remat_every_n_iterations_scan(f, n, carry, x):
     """
     Remat every n mini batches.
@@ -134,6 +217,12 @@ class TTTBase(nn.Module):
             self.head_dim, self.mini_batch_size * 2, theta=self.config.rope_theta, dtype=self.dtype
         )
 
+        # Spectral normalization settings
+        self.use_spectral_norm = getattr(self.config, 'use_spectral_norm', False)
+        self.spectral_norm_eps = getattr(self.config, 'spectral_norm_eps', 1e-12)
+        self.use_power_iteration = getattr(self.config, 'use_power_iteration', True)
+        self.power_iteration_steps = getattr(self.config, 'power_iteration_steps', 1)
+
         self.setup_qkvo()
         self.setup_token_idx()
         self.setup_ttt_lr_gate()
@@ -152,6 +241,75 @@ class TTTBase(nn.Module):
             print("Initializing TTT and conv caches.")
             self.ttt_cache = self.variable('ttt_cache', 'weights', lambda: ())
             self.conv_cache = self.variable('conv_cache', 'states', lambda: ())
+            
+            # Initialize spectral norm u vectors cache if using power iteration
+            if self.use_spectral_norm and self.use_power_iteration:
+                self.spectral_u_cache = self.variable('spectral_u_cache', 'u_vectors', lambda: ())
+
+    def apply_spectral_normalization(self, ttt_params):
+        """Apply spectral normalization to TTT parameters."""
+        if not self.use_spectral_norm:
+            return ttt_params
+            
+        if self.use_power_iteration:
+            return self._apply_spectral_norm_power_iteration(ttt_params)
+        else:
+            return self._apply_spectral_norm_svd(ttt_params)
+    
+    def _apply_spectral_norm_svd(self, ttt_params):
+        """Apply spectral normalization using full SVD."""
+        normalized_params = []
+        for param in ttt_params:
+            normalized_param = spectral_normalize(param, self.spectral_norm_eps)
+            normalized_params.append(normalized_param)
+        return tuple(normalized_params)
+    
+    def _apply_spectral_norm_power_iteration(self, ttt_params):
+        """Apply spectral normalization using power iteration."""
+        # Get or initialize u vectors cache
+        if (self.is_mutable_collection('spectral_u_cache') and 
+            hasattr(self, 'spectral_u_cache') and 
+            self.spectral_u_cache.value == ()):
+            # Initialize u vectors for each TTT parameter
+            u_vectors = []
+            for param in ttt_params:
+                if len(param.shape) > 2:
+                    # Multi-head case
+                    u_vec = jax.random.normal(
+                        jax.random.PRNGKey(0), 
+                        (param.shape[0], param.shape[1])
+                    )
+                    u_vec = u_vec / jnp.linalg.norm(u_vec, axis=1, keepdims=True)
+                else:
+                    u_vec = jax.random.normal(jax.random.PRNGKey(0), (param.shape[0],))
+                    u_vec = u_vec / jnp.linalg.norm(u_vec)
+                u_vectors.append(u_vec)
+            
+            if self.is_mutable_collection('spectral_u_cache'):
+                self.spectral_u_cache.value = tuple(u_vectors)
+        
+        # Get cached u vectors
+        u_vectors = (self.spectral_u_cache.value 
+                    if hasattr(self, 'spectral_u_cache') and self.spectral_u_cache.value != () 
+                    else [None] * len(ttt_params))
+        
+        # Apply spectral normalization with power iteration
+        normalized_params = []
+        updated_u_vectors = []
+        
+        for i, param in enumerate(ttt_params):
+            u_vec = u_vectors[i] if i < len(u_vectors) else None
+            normalized_param, updated_u_vec = spectral_normalize_power_iteration(
+                param, u_vec, self.power_iteration_steps, self.spectral_norm_eps
+            )
+            normalized_params.append(normalized_param)
+            updated_u_vectors.append(updated_u_vec)
+        
+        # Update u vectors cache
+        if self.is_mutable_collection('spectral_u_cache'):
+            self.spectral_u_cache.value = tuple(updated_u_vectors)
+        
+        return tuple(normalized_params)
 
     def _init_conv_cache_if_needed(self, batch_size: int):
         """Initialize conv cache if it doesn't exist or is empty. Efficient implementation."""
@@ -269,6 +427,12 @@ class TTTBase(nn.Module):
             if 'conv_k_state' in cache_dict:
                 cache_dict['conv_k_state'] = jnp.zeros_like(cache_dict['conv_k_state'])
 
+    def reset_spectral_cache(self):
+        """Reset spectral normalization cache."""
+        if (self.is_mutable_collection('spectral_u_cache') and 
+            hasattr(self, 'spectral_u_cache')):
+            self.spectral_u_cache.value = ()
+
     def __call__(
         self,
         hidden_states,
@@ -281,6 +445,7 @@ class TTTBase(nn.Module):
     ):
         if reset_cache:
             self.reset_conv_cache()
+            self.reset_spectral_cache()
             if self.is_mutable_collection('ttt_cache'):
                 self.ttt_cache.value = ()
         
@@ -291,7 +456,10 @@ class TTTBase(nn.Module):
         if self.is_mutable_collection('ttt_cache') and hasattr(self, 'ttt_cache') and  self.ttt_cache.value == ():
             print("Initializing TTT parameter cache.")
             
-            batched_ttt_params = tree_map(lambda p: p[None].repeat(B, axis=0) if isinstance(p, jnp.ndarray) else p, self.ttt_params)
+            # Apply spectral normalization to initial parameters
+            normalized_ttt_params = self.apply_spectral_normalization(self.ttt_params)
+            
+            batched_ttt_params = tree_map(lambda p: p[None].repeat(B, axis=0) if isinstance(p, jnp.ndarray) else p, normalized_ttt_params)
             self.ttt_cache.value = batched_ttt_params
 
         self.config.output_ttt_stats = output_ttt_stats
@@ -486,7 +654,10 @@ class TTTBase(nn.Module):
 
                 return (Z.reshape(-1, self.head_dim), ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1, ttt_params_final)
 
-            outputs = parallelize_over_heads(XQ, XK, XV, eta,  self.ttt_params if  ttt_params is None else ttt_params , self.ttt_norm_params)
+            # Apply spectral normalization to TTT parameters before use
+            normalized_ttt_params = self.apply_spectral_normalization(self.ttt_params if ttt_params is None else ttt_params)
+            
+            outputs = parallelize_over_heads(XQ, XK, XV, eta, normalized_ttt_params, self.ttt_norm_params)
             return outputs
 
         outputs = update_embed(XQ, XK, XV, eta, ttt_params=self.ttt_cache.value if hasattr(self, 'ttt_cache') else None)
@@ -526,6 +697,11 @@ class TTTLinearBase(TTTBase):
             ttt_norm_params
         ):
             W1_init, = ttt_params_mini_batch_init
+            
+            # Apply spectral normalization to weights during processing
+            if self.use_spectral_norm:
+                W1_init = spectral_normalize(W1_init, self.spectral_norm_eps)
+            
             square_eta_mini_batch = eta_mini_batch[: self.mini_batch_size]
             last_eta_in_mini_batch = eta_mini_batch[-1][:, None]
 
@@ -545,6 +721,8 @@ class TTTLinearBase(TTTBase):
             # Calculate TTT loss using W_init of the entire sequence
             if self.config.output_ttt_stats:
                 W1_0, = ttt_params_init
+                if self.use_spectral_norm:
+                    W1_0 = spectral_normalize(W1_0, self.spectral_norm_eps)
                 Z1_0 = X1 @ W1_0
                 ttt_norm_out_0 = self.ttt_norm.apply({"params": ttt_norm_params}, Z1_0)
                 ttt_loss_mse_init = ((ttt_norm_out_0 - ssl_target)[-1] ** 2).mean()
@@ -563,7 +741,10 @@ class TTTLinearBase(TTTBase):
 
             # Calculate ttt loss using the updated W_init by the current mini-batch
             if self.config.output_ttt_stats:
-                X1_last_fwd_new = X1[-1:] @ W1_bar_last
+                W1_eval = W1_bar_last
+                if self.use_spectral_norm:
+                    W1_eval = spectral_normalize(W1_eval, self.spectral_norm_eps)
+                X1_last_fwd_new = X1[-1:] @ W1_eval
                 X1_last_fwd_new = self.ttt_norm.apply({"params": ttt_norm_params}, X1_last_fwd_new)
                 ttt_loss_mse_step_1 = ((X1_last_fwd_new - ssl_target[-1:]) ** 2).mean()
             else:
@@ -694,6 +875,12 @@ class TTTMLPBase(TTTBase):
         ttt_norm_params
     ):
         W1_init, W2_init = ttt_params_mini_batch_init
+        
+        # Apply spectral normalization to weights during processing
+        if self.use_spectral_norm:
+            W1_init = spectral_normalize(W1_init, self.spectral_norm_eps)
+            W2_init = spectral_normalize(W2_init, self.spectral_norm_eps)
+        
         square_eta_mini_batch = eta_mini_batch[: self.mini_batch_size]
         last_eta_in_mini_batch = eta_mini_batch[-1][:, None]
 
@@ -716,6 +903,9 @@ class TTTMLPBase(TTTBase):
         # Calculate ttt loss using W_init of the entire sequence
         if self.config.output_ttt_stats:
             W1_0, W2_0 = ttt_params_init
+            if self.use_spectral_norm:
+                W1_0 = spectral_normalize(W1_0, self.spectral_norm_eps)
+                W2_0 = spectral_normalize(W2_0, self.spectral_norm_eps)
             Z1_0 = X1 @ W1_0
             X2_0 = nn.gelu(Z1_0)
             Z2_0 = X2_0 @ W2_0
@@ -740,7 +930,12 @@ class TTTMLPBase(TTTBase):
         W2_bar_last = W2_init - (last_eta_in_mini_batch * X2).transpose(1, 0) @ grad_l_wrt_Z2
 
         if self.config.output_ttt_stats:
-            X1_last_fwd_new = nn.gelu(X1[-1:] @ W1_bar_last) @ W2_bar_last
+            W1_eval = W1_bar_last
+            W2_eval = W2_bar_last
+            if self.use_spectral_norm:
+                W1_eval = spectral_normalize(W1_eval, self.spectral_norm_eps)
+                W2_eval = spectral_normalize(W2_eval, self.spectral_norm_eps)
+            X1_last_fwd_new = nn.gelu(X1[-1:] @ W1_eval) @ W2_eval
             X1_last_fwd_new = self.ttt_norm.apply({"params": ttt_norm_params}, X1_last_fwd_new)
             ttt_loss_mse_step_1 = ((X1_last_fwd_new - ssl_target[-1:]) ** 2).mean()
         else:

@@ -128,7 +128,6 @@ def make_train_step_fn(model, optimizer_info, model_config, accum_steps=1):
                     return loss, ttt_stats
 
                 grad_fn = jax.value_and_grad(loss_and_accuracy, has_aux=True)
-                print('train_state.params', train_state.params)
                 (loss, ttt_stats), grads = grad_fn(train_state.params)
                 sum_grads = tree_map(lambda x, y: x + y, sum_grads, grads)
                 carry_new = {"sum_grads": sum_grads}

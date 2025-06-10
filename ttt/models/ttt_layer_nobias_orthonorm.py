@@ -22,6 +22,46 @@ from ttt.infra.jax_utils import with_sharding_constraint, get_gradient_checkpoin
 Axes = Union[int, Sequence[int]]
 
 
+def vectorized_lattice_update(weight_matrix, incoming_info_matrix, alpha):
+    """
+    Vectorized Lattice orthogonal update for entire weight matrix.
+    
+    Each column (memory slot) is updated exclusively with information orthogonal 
+    to its current state, ensuring only novel, non-redundant data is incorporated.
+    
+    Args:
+        weight_matrix: (input_dim, output_dim) - each column is a memory slot
+        incoming_info_matrix: (input_dim, output_dim) - corresponding incoming info
+        alpha: scalar writing intensity
+        
+    Returns:
+        Updated weight matrix with orthogonal updates and unit sphere normalization
+    """
+    # Compute norms squared for all columns
+    norms_sq = jnp.sum(weight_matrix ** 2, axis=0, keepdims=True)  # (1, output_dim)
+    norms_sq = jnp.maximum(norms_sq, 1e-8)  # Avoid division by zero
+    
+    # Compute dot products for all columns  
+    dot_products = jnp.sum(weight_matrix * incoming_info_matrix, axis=0, keepdims=True)  # (1, output_dim)
+    
+    # Compute projection coefficients
+    proj_coeffs = dot_products / norms_sq  # (1, output_dim)
+    
+    # Compute orthogonal components: h_orth = h - w * (w^T h) / ||w||^2
+    orthogonal_components = incoming_info_matrix - weight_matrix * proj_coeffs
+    
+    # Update with orthogonal components: w_new = w + α * h_orth
+    updated_matrix = weight_matrix + alpha * orthogonal_components
+    
+    # Normalize columns to unit sphere for stability (Lattice normalization)
+    updated_norms = jnp.linalg.norm(updated_matrix, axis=0, keepdims=True)
+    updated_norms = jnp.maximum(updated_norms, 1e-8)
+    normalized_matrix = updated_matrix / updated_norms
+    
+    return normalized_matrix
+
+
+
 def scan_remat_every_n_iterations_scan(f, n, carry, x):
     """
     Remat every n mini batches.
@@ -516,65 +556,68 @@ class TTTLinearBase(TTTBase):
         self.ttt_params = (self.W1,)
 
     def process_mini_batch(
-            self,
-            XQ_mini_batch,
-            XK_mini_batch,
-            XV_mini_batch,
-            eta_mini_batch,
-            ttt_params_init,
-            ttt_params_mini_batch_init,
-            ttt_norm_params
-        ):
-            W1_init, = ttt_params_mini_batch_init
-            square_eta_mini_batch = eta_mini_batch[: self.mini_batch_size]
-            last_eta_in_mini_batch = eta_mini_batch[-1][:, None]
+        self,
+        XQ_mini_batch,
+        XK_mini_batch,
+        XV_mini_batch,
+        eta_mini_batch,
+        ttt_params_init,
+        ttt_params_mini_batch_init,
+        ttt_norm_params
+    ):
+        W1_init, = ttt_params_mini_batch_init
+        square_eta_mini_batch = eta_mini_batch[: self.mini_batch_size]
+        last_eta_in_mini_batch = eta_mini_batch[-1][:, None]
 
-            X1 = XK_mini_batch
-            Z1 = X1 @ W1_init
-            ttt_norm_out, ttt_norm_vjp = jax.vjp(lambda z: self.ttt_norm.apply({"params": ttt_norm_params}, z), Z1)
-            ssl_target = XV_mini_batch - XK_mini_batch
-            grad_l_wrt_ttt_norm_out = ttt_norm_out - ssl_target
-            grad_l_wrt_Z1 = ttt_norm_vjp(grad_l_wrt_ttt_norm_out)[0]
+        X1 = XK_mini_batch
+        Z1 = X1 @ W1_init
+        ttt_norm_out, ttt_norm_vjp = jax.vjp(lambda z: self.ttt_norm.apply({"params": ttt_norm_params}, z), Z1)
+        ssl_target = XV_mini_batch - XK_mini_batch
+        grad_l_wrt_ttt_norm_out = ttt_norm_out - ssl_target
+        grad_l_wrt_Z1 = ttt_norm_vjp(grad_l_wrt_ttt_norm_out)[0]
 
-            # Calculate TTT loss using W_init of the current mini-batch
-            if self.config.output_ttt_stats:
-                ttt_loss_mse_step_0 = (grad_l_wrt_ttt_norm_out[-1] ** 2).mean()
-            else:
-                ttt_loss_mse_step_0 = None
+        # Calculate TTT loss using W_init of the current mini-batch
+        if self.config.output_ttt_stats:
+            ttt_loss_mse_step_0 = (grad_l_wrt_ttt_norm_out[-1] ** 2).mean()
+        else:
+            ttt_loss_mse_step_0 = None
 
-            # Calculate TTT loss using W_init of the entire sequence
-            if self.config.output_ttt_stats:
-                W1_0, = ttt_params_init
-                Z1_0 = X1 @ W1_0
-                ttt_norm_out_0 = self.ttt_norm.apply({"params": ttt_norm_params}, Z1_0)
-                ttt_loss_mse_init = ((ttt_norm_out_0 - ssl_target)[-1] ** 2).mean()
-            else:
-                ttt_loss_mse_init = None
+        # Calculate TTT loss using W_init of the entire sequence
+        if self.config.output_ttt_stats:
+            W1_0, = ttt_params_init
+            Z1_0 = X1 @ W1_0
+            ttt_norm_out_0 = self.ttt_norm.apply({"params": ttt_norm_params}, Z1_0)
+            ttt_loss_mse_init = ((ttt_norm_out_0 - ssl_target)[-1] ** 2).mean()
+        else:
+            ttt_loss_mse_init = None
 
-            # Original adaptive behavior
-            X1_bar = XQ_mini_batch
-            Attn1 = jnp.tril(X1_bar @ X1.transpose(1, 0))
-            Z1_bar = X1_bar @ W1_init - (square_eta_mini_batch * Attn1) @ grad_l_wrt_Z1
-            ttt_norm_out_bar = self.ttt_norm.apply({"params": ttt_norm_params}, Z1_bar)
+        # Lattice orthogonal update
+        incoming_info_W1 = (X1).transpose(1, 0) @ grad_l_wrt_Z1
+        alpha = last_eta_in_mini_batch[0, 0]
+        W1_bar_last = vectorized_lattice_update(W1_init, incoming_info_W1, alpha)
 
-            output_mini_batch = X1_bar + ttt_norm_out_bar
+        # Original adaptive behavior
+        X1_bar = XQ_mini_batch
+        Attn1 = jnp.tril(X1_bar @ X1.transpose(1, 0))
+        Z1_bar = X1_bar @ W1_init - (square_eta_mini_batch * Attn1) @ grad_l_wrt_Z1
+        ttt_norm_out_bar = self.ttt_norm.apply({"params": ttt_norm_params}, Z1_bar)
 
-            W1_bar_last = W1_init - (last_eta_in_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1
+        output_mini_batch = X1_bar + ttt_norm_out_bar
 
-            # Calculate ttt loss using the updated W_init by the current mini-batch
-            if self.config.output_ttt_stats:
-                X1_last_fwd_new = X1[-1:] @ W1_bar_last
-                X1_last_fwd_new = self.ttt_norm.apply({"params": ttt_norm_params}, X1_last_fwd_new)
-                ttt_loss_mse_step_1 = ((X1_last_fwd_new - ssl_target[-1:]) ** 2).mean()
-            else:
-                ttt_loss_mse_step_1 = None
+        # Calculate ttt loss using the updated W_init by the current mini-batch
+        if self.config.output_ttt_stats:
+            X1_last_fwd_new = X1[-1:] @ W1_bar_last
+            X1_last_fwd_new = self.ttt_norm.apply({"params": ttt_norm_params}, X1_last_fwd_new)
+            ttt_loss_mse_step_1 = ((X1_last_fwd_new - ssl_target[-1:]) ** 2).mean()
+        else:
+            ttt_loss_mse_step_1 = None
 
-            ttt_params_mini_batch_new = (W1_bar_last,)
+        ttt_params_mini_batch_new = (W1_bar_last,)
 
-            return (
-                ttt_params_mini_batch_new,
-                (output_mini_batch, ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1),
-            )
+        return (
+            ttt_params_mini_batch_new,
+            (output_mini_batch, ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1),
+        )
 
 
 class TTTLinear(TTTLinearBase):
@@ -683,6 +726,7 @@ class TTTMLPBase(TTTBase):
         )
         self.ttt_params = (self.W1, self.W2)
 
+
     def process_mini_batch(
         self,
         XQ_mini_batch,
@@ -724,6 +768,16 @@ class TTTMLPBase(TTTBase):
         else:
             ttt_loss_mse_init = None
 
+        # Lattice orthogonal updates for both W1 and W2
+        incoming_info_W1 = (X1).transpose(1, 0) @ grad_l_wrt_Z1  # Shape: (head_dim, 4*head_dim)
+        incoming_info_W2 = (X2).transpose(1, 0) @ grad_l_wrt_Z2  # Shape: (4*head_dim, head_dim)
+        
+        alpha = last_eta_in_mini_batch[0, 0]  # Writing intensity
+        
+        # Apply vectorized Lattice updates
+        W1_bar_last = vectorized_lattice_update(W1_init, incoming_info_W1, alpha)
+        W2_bar_last = vectorized_lattice_update(W2_init, incoming_info_W2, alpha)
+
         # Original adaptive behavior
         X1_bar = XQ_mini_batch
         Attn1 = jnp.tril(X1_bar @ X1.transpose(1, 0))
@@ -735,9 +789,6 @@ class TTTMLPBase(TTTBase):
         ttt_norm_out_bar = self.ttt_norm.apply({"params": ttt_norm_params}, Z2_bar)
 
         output_mini_batch = X1_bar + ttt_norm_out_bar
-
-        W1_bar_last = W1_init - (last_eta_in_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1
-        W2_bar_last = W2_init - (last_eta_in_mini_batch * X2).transpose(1, 0) @ grad_l_wrt_Z2
 
         if self.config.output_ttt_stats:
             X1_last_fwd_new = nn.gelu(X1[-1:] @ W1_bar_last) @ W2_bar_last

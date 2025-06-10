@@ -506,11 +506,17 @@ class TTTLinearBase(TTTBase):
     def setup(self):
         super().setup()
 
-        self.W1 = self.param(
-            "ttt_dense_0",
-            nn.initializers.normal(self.config.initializer_range),
+        # initialize W1 with random normal distribution
+        #    (self.num_heads, self.head_dim, self.head_dim),
+        #    self.param_dtype,
+        
+        # first sample a random matrix of shape (self.num_heads, self.head_dim, self.head_dim)
+
+
+        self.W1 = jax.random.normal(
+            self.make_rng("W1"),
             (self.num_heads, self.head_dim, self.head_dim),
-            self.param_dtype,
+            dtype=self.param_dtype
         )
         
         self.ttt_params = (self.W1,)
@@ -669,17 +675,15 @@ class TTTLinear(TTTLinearBase):
 class TTTMLPBase(TTTBase):
     def setup(self):
         super().setup()
-        self.W1 = self.param(
-            "ttt_dense_0",
-            nn.initializers.normal(self.config.initializer_range),
-            (self.num_heads, self.head_dim, 4 * self.head_dim),
-            self.param_dtype,
+        self.W1 = jax.random.normal(
+            self.make_rng("W1"),
+            (self.num_heads, self.head_dim, self.head_dim),
+            dtype=self.param_dtype
         )
-        self.W2 = self.param(
-            "ttt_dense_1",
-            nn.initializers.normal(self.config.initializer_range),
-            (self.num_heads, 4 * self.head_dim, self.head_dim),
-            self.param_dtype,
+        self.W2 = jax.random.normal(
+            self.make_rng("W2"),
+            (self.num_heads, self.head_dim, self.width),
+            dtype=self.param_dtype
         )
         self.ttt_params = (self.W1, self.W2)
 

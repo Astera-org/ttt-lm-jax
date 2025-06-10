@@ -341,7 +341,7 @@ class ModelConfig(PretrainedConfig):
 
     @staticmethod
     def rng_keys():
-        return ("params", "dropout", "fcm")
+        return ("params", "dropout", "fcm", "W1", "W2")
 
     @classmethod
     def load_config(cls, path):

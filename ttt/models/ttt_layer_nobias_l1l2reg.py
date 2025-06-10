@@ -134,6 +134,10 @@ class TTTBase(nn.Module):
             self.head_dim, self.mini_batch_size * 2, theta=self.config.rope_theta, dtype=self.dtype
         )
 
+        # Regularization coefficients - add these to your config if not present
+        self.l1_reg_coeff = getattr(self.config, 'l1_reg_coeff', 1e-4)
+        self.l2_reg_coeff = getattr(self.config, 'l2_reg_coeff', 1e-4)
+
         self.setup_qkvo()
         self.setup_token_idx()
         self.setup_ttt_lr_gate()
@@ -559,7 +563,15 @@ class TTTLinearBase(TTTBase):
 
             output_mini_batch = X1_bar + ttt_norm_out_bar
 
-            W1_bar_last = W1_init - (last_eta_in_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1
+            # Apply regularization to W1 update
+            # L1 regularization: lambda1 * sign(W)
+            # L2 regularization: lambda2 * W
+            # Use mean learning rate for regularization (uniform across weight matrix)
+            mean_eta = jnp.mean(last_eta_in_mini_batch)
+            reg_grad_W1 = (self.l1_reg_coeff * jnp.sign(W1_init) + 
+                          self.l2_reg_coeff * W1_init)
+            
+            W1_bar_last = W1_init - (last_eta_in_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1 - mean_eta * reg_grad_W1
 
             # Calculate ttt loss using the updated W_init by the current mini-batch
             if self.config.output_ttt_stats:
@@ -736,8 +748,18 @@ class TTTMLPBase(TTTBase):
 
         output_mini_batch = X1_bar + ttt_norm_out_bar
 
-        W1_bar_last = W1_init - (last_eta_in_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1
-        W2_bar_last = W2_init - (last_eta_in_mini_batch * X2).transpose(1, 0) @ grad_l_wrt_Z2
+        # Apply regularization to W1 and W2 updates
+        # L1 regularization: lambda1 * sign(W)
+        # L2 regularization: lambda2 * W
+        # Use mean learning rate for regularization (uniform across weight matrices)
+        mean_eta = jnp.mean(last_eta_in_mini_batch)
+        reg_grad_W1 = (self.l1_reg_coeff * jnp.sign(W1_init) + 
+                      self.l2_reg_coeff * W1_init)
+        reg_grad_W2 = (self.l1_reg_coeff * jnp.sign(W2_init) + 
+                      self.l2_reg_coeff * W2_init)
+
+        W1_bar_last = W1_init - (last_eta_in_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1 - mean_eta * reg_grad_W1
+        W2_bar_last = W2_init - (last_eta_in_mini_batch * X2).transpose(1, 0) @ grad_l_wrt_Z2 - mean_eta * reg_grad_W2
 
         if self.config.output_ttt_stats:
             X1_last_fwd_new = nn.gelu(X1[-1:] @ W1_bar_last) @ W2_bar_last

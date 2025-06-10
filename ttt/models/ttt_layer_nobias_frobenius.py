@@ -22,6 +22,21 @@ from ttt.infra.jax_utils import with_sharding_constraint, get_gradient_checkpoin
 Axes = Union[int, Sequence[int]]
 
 
+def frobenius_normalize(W, eps=1e-8):
+    """
+    Normalize a weight matrix by its Frobenius norm.
+    
+    Args:
+        W: Weight matrix to normalize
+        eps: Small epsilon to prevent division by zero
+    
+    Returns:
+        Normalized weight matrix
+    """
+    frob_norm = jnp.sqrt(jnp.sum(W ** 2) + eps)
+    return W / frob_norm
+
+
 def scan_remat_every_n_iterations_scan(f, n, carry, x):
     """
     Remat every n mini batches.
@@ -133,6 +148,10 @@ class TTTBase(nn.Module):
         self.freqs_cis = precompute_freqs_cis(
             self.head_dim, self.mini_batch_size * 2, theta=self.config.rope_theta, dtype=self.dtype
         )
+
+        # Add Frobenius normalization configuration
+        self.use_frobenius_norm = getattr(self.config, 'use_frobenius_norm', True)
+        self.frobenius_eps = getattr(self.config, 'frobenius_eps', 1e-8)
 
         self.setup_qkvo()
         self.setup_token_idx()
@@ -561,6 +580,10 @@ class TTTLinearBase(TTTBase):
 
             W1_bar_last = W1_init - (last_eta_in_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1
 
+            # Apply Frobenius normalization to the updated weight
+            if self.use_frobenius_norm:
+                W1_bar_last = frobenius_normalize(W1_bar_last, self.frobenius_eps)
+
             # Calculate ttt loss using the updated W_init by the current mini-batch
             if self.config.output_ttt_stats:
                 X1_last_fwd_new = X1[-1:] @ W1_bar_last
@@ -738,6 +761,11 @@ class TTTMLPBase(TTTBase):
 
         W1_bar_last = W1_init - (last_eta_in_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1
         W2_bar_last = W2_init - (last_eta_in_mini_batch * X2).transpose(1, 0) @ grad_l_wrt_Z2
+
+        # Apply Frobenius normalization to the updated weights
+        if self.use_frobenius_norm:
+            W1_bar_last = frobenius_normalize(W1_bar_last, self.frobenius_eps)
+            W2_bar_last = frobenius_normalize(W2_bar_last, self.frobenius_eps)
 
         if self.config.output_ttt_stats:
             X1_last_fwd_new = nn.gelu(X1[-1:] @ W1_bar_last) @ W2_bar_last

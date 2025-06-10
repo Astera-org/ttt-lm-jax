@@ -130,6 +130,14 @@ class TTTBase(nn.Module):
         self.mini_batch_size = self.config.mini_batch_size
         self.n_mini_batch = self.config.max_sequence_length // self.mini_batch_size
         self.seq_shape = (self.n_mini_batch, self.mini_batch_size)
+        
+        # Get TTT intermediate size from config, with fallback to default behavior
+        self.ttt_intermediate_size = getattr(self.config, 'ttt_intermediate_size', None)
+        if self.ttt_intermediate_size is None:
+            # Default behavior: use head_dim for linear, 4*head_dim for MLP
+            # This will be overridden in subclasses
+            self.ttt_intermediate_size = self.head_dim
+            
         self.freqs_cis = precompute_freqs_cis(
             self.head_dim, self.mini_batch_size * 2, theta=self.config.rope_theta, dtype=self.dtype
         )
@@ -505,11 +513,15 @@ class TTTBase(nn.Module):
 class TTTLinearBase(TTTBase):
     def setup(self):
         super().setup()
+        
+        # Set default TTT intermediate size for linear variant if not specified
+        if self.ttt_intermediate_size is None:
+            self.ttt_intermediate_size = self.head_dim
 
         self.W1 = self.param(
             "ttt_dense_0",
             nn.initializers.normal(self.config.initializer_range),
-            (self.num_heads, self.head_dim, self.head_dim),
+            (self.num_heads, self.head_dim, self.ttt_intermediate_size),
             self.param_dtype,
         )
         
@@ -568,6 +580,10 @@ class TTTLinearBase(TTTBase):
                 ttt_loss_mse_step_1 = ((X1_last_fwd_new - ssl_target[-1:]) ** 2).mean()
             else:
                 ttt_loss_mse_step_1 = None
+
+
+            # normalize columnwise 
+            W1_bar_last = W1_bar_last / jnp.linalg.norm(W1_bar_last, axis=0, keepdims=True)
 
             ttt_params_mini_batch_new = (W1_bar_last,)
 
@@ -669,16 +685,21 @@ class TTTLinear(TTTLinearBase):
 class TTTMLPBase(TTTBase):
     def setup(self):
         super().setup()
+        
+        # Set default TTT intermediate size for MLP variant if not specified
+        if self.ttt_intermediate_size is None:
+            self.ttt_intermediate_size = 4 * self.head_dim
+            
         self.W1 = self.param(
             "ttt_dense_0",
             nn.initializers.normal(self.config.initializer_range),
-            (self.num_heads, self.head_dim, 4 * self.head_dim),
+            (self.num_heads, self.head_dim, self.ttt_intermediate_size),
             self.param_dtype,
         )
         self.W2 = self.param(
             "ttt_dense_1",
             nn.initializers.normal(self.config.initializer_range),
-            (self.num_heads, 4 * self.head_dim, self.head_dim),
+            (self.num_heads, self.ttt_intermediate_size, self.head_dim),
             self.param_dtype,
         )
         self.ttt_params = (self.W1, self.W2)
