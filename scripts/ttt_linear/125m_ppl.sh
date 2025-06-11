@@ -12,10 +12,10 @@ GRAD_ACCUM=4 # 256/16
 EXP_DIR=./current_exp
 mkdir -p ${EXP_DIR}
 
-#export TTT_IMPLEMENTATION="ttt_layer_nobias_l2reg"
+#export TTT_IMPLEMENTATION="custom.ttt_layer_nobias_l2reg"
 
 if [ -z "$1" ]; then
-        TTT_IMPLEMENTATION="ttt_layer_nobias_W0_noise"
+        TTT_IMPLEMENTATION="custom.ttt_layer_nobias_bilevel"
         echo "No TTT implementation specified. Using default: ${TTT_IMPLEMENTATION}"
 else
         TTT_IMPLEMENTATION="$1"

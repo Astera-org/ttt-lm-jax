@@ -311,10 +311,15 @@ class ModelConfig(PretrainedConfig):
             ("seq_modeling_block/post_norm/bias", PS(None)),
             ("seq_modeling_block/learnable_ttt_lr/kernel", PS(None)),
             ("seq_modeling_block/learnable_ttt_lr/bias", PS(None)),
+
             ("seq_modeling_block/ttt_dense_0", PS(None)),
             ("seq_modeling_block/ttt_dense_1", PS(None)),
             ("seq_modeling_block/ttt_bias_0", PS(None)),
             ("seq_modeling_block/ttt_bias_1", PS(None)),
+
+            ("seq_modeling_block/ttt_dense_0_slow", PS(None)),
+            ("seq_modeling_block/ttt_dense_1_slow", PS(None)),
+
 
 
             # TTT and Pre-Conv caches - not sharded for simplicity

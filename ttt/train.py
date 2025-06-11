@@ -1,6 +1,7 @@
 import mlxu
 import wandb
 import os.path as osp
+import json
 
 from tqdm import tqdm
 from copy import deepcopy
@@ -324,6 +325,28 @@ def initialize_or_resume(
     return start_step, train_state, train_loader
 
 
+def save_training_results(results_dict, exp_dir, exp_name):
+    """Save training results to a text file in an easy-to-parse format."""
+    results_file = osp.join(exp_dir, exp_name, "training_results.txt")
+    
+    with open(results_file, 'w') as f:
+        # Write header with metadata
+        f.write("# Training Results\n")
+        f.write(f"experiment_name: {exp_name}\n")
+        f.write(f"total_steps: {len(results_dict['steps'])}\n")
+        f.write(f"final_loss: {results_dict['losses'][-1]:.6f}\n")
+        f.write(f"min_loss: {min(results_dict['losses']):.6f}\n")
+        f.write(f"final_lr: {results_dict['learning_rates'][-1]:.6e}\n")
+        f.write(f"final_grad_norm: {results_dict['grad_norms'][-1]:.6f}\n")
+        f.write("\n")
+        
+        # Write detailed metrics in CSV-like format
+        f.write("# Detailed Metrics (step,loss,grad_norm,learning_rate)\n")
+        for i in range(len(results_dict['steps'])):
+            f.write(f"{results_dict['steps'][i]},{results_dict['losses'][i]:.6f},"
+                   f"{results_dict['grad_norms'][i]:.6f},{results_dict['learning_rates'][i]:.6e}\n")
+
+
 def main(argv):
 
 
@@ -435,6 +458,13 @@ def main(argv):
 
         train_loader_iterator = iter(train_loader)
 
+        # Initialize results tracking
+        results_dict = {
+            'steps': [],
+            'losses': [],
+            'grad_norms': [],
+            'learning_rates': []
+        }
 
         for step in tqdm(
             range(start_step, FLAGS.total_steps + 1),
@@ -482,6 +512,13 @@ def main(argv):
                 train_state, sharded_rng, batch, ttt_lr_mult, output_ttt_stats
             )
 
+            # Store results for later saving
+            if master_process:
+                results_dict['steps'].append(step)
+                results_dict['losses'].append(float(loss.item()))
+                results_dict['grad_norms'].append(float(grads_norm.item()))
+                results_dict['learning_rates'].append(float(learning_rate.item()))
+
             if master_process:
                 wandb.log(
                     {
@@ -507,6 +544,11 @@ def main(argv):
 
             if step == FLAGS.total_steps:
                 master_print("Training has completed!")
+                # Save training results to text file
+                if master_process:
+                    master_print("Saving training results...")
+                    save_training_results(results_dict, FLAGS.exp_dir, FLAGS.exp_name)
+                    master_print(f"Results saved to {osp.join(FLAGS.exp_dir, FLAGS.exp_name, 'training_results.txt')}")
 
 
 if __name__ == "__main__":

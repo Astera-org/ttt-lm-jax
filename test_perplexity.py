@@ -716,6 +716,114 @@ class ResultsVisualizer:
             print(f"Overall TTT: {np.median(all_norms):.6f} ± {np.std(all_norms):.6f}")
         else:
             print("Overall TTT: No valid norms calculated")
+    
+    @staticmethod
+    def save_results_to_file(book_results: List[Dict[str, Any]], exp_name: str, 
+                            exp_dir: str, ppl_seq_size: int, compute_chunk_size: int, 
+                            tokens_per_book: int, total_time: float) -> str:
+        """Save detailed results to a structured text file."""
+        print("[SAVE] Saving results to text file...")
+        
+        # Create output directory if it doesn't exist
+        output_dir = os.path.join(exp_dir, exp_name)
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Generate filename with timestamp
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f'ttt_perplexity_results_{exp_name}_{timestamp}.txt'
+        filepath = os.path.join(output_dir, filename)
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            # Header with configuration
+            f.write("# TTT Language Model Perplexity Evaluation Results\n")
+            f.write(f"# Experiment: {exp_name}\n")
+            f.write(f"# Timestamp: {timestamp}\n")
+            f.write(f"# Configuration: ppl_seq_size={ppl_seq_size}, chunk_size={compute_chunk_size}, tokens_per_book={tokens_per_book}\n")
+            f.write(f"# Total_time: {total_time:.2f}s\n")
+            f.write(f"# Books_processed: {len(book_results)}\n")
+            f.write("#\n")
+            
+            # Overall summary statistics
+            total_sequences = sum(len(r['seq_ending_positions']) for r in book_results)
+            total_tokens = sum(r['total_tokens'] for r in book_results)
+            all_perplexities = []
+            all_norms = []
+            
+            for result in book_results:
+                all_perplexities.extend(result['seq_perplexities'])
+                all_norms.extend([n for n in result['seq_ttt_norms'] if n is not None])
+            
+            f.write("# SUMMARY_STATS\n")
+            f.write(f"total_sequences: {total_sequences}\n")
+            f.write(f"total_tokens: {total_tokens}\n")
+            f.write(f"avg_time_per_sequence: {total_time/max(1, total_sequences):.6f}\n")
+            
+            if all_perplexities:
+                f.write(f"perplexity_median: {np.median(all_perplexities):.6f}\n")
+                f.write(f"perplexity_mean: {np.mean(all_perplexities):.6f}\n")
+                f.write(f"perplexity_std: {np.std(all_perplexities):.6f}\n")
+                f.write(f"perplexity_min: {np.min(all_perplexities):.6f}\n")
+                f.write(f"perplexity_max: {np.max(all_perplexities):.6f}\n")
+            else:
+                f.write("perplexity_median: NaN\n")
+                f.write("perplexity_mean: NaN\n")
+                f.write("perplexity_std: NaN\n")
+                f.write("perplexity_min: NaN\n")
+                f.write("perplexity_max: NaN\n")
+            
+            if all_norms:
+                f.write(f"ttt_norm_median: {np.median(all_norms):.8f}\n")
+                f.write(f"ttt_norm_mean: {np.mean(all_norms):.8f}\n")
+                f.write(f"ttt_norm_std: {np.std(all_norms):.8f}\n")
+                f.write(f"ttt_norm_min: {np.min(all_norms):.8f}\n")
+                f.write(f"ttt_norm_max: {np.max(all_norms):.8f}\n")
+            else:
+                f.write("ttt_norm_median: NaN\n")
+                f.write("ttt_norm_mean: NaN\n")
+                f.write("ttt_norm_std: NaN\n")
+                f.write("ttt_norm_min: NaN\n")
+                f.write("ttt_norm_max: NaN\n")
+            
+            f.write("#\n")
+            
+            # Per-book summary
+            f.write("# BOOK_SUMMARY\n")
+            f.write("# Format: book_id,sequences,tokens,calc_time,ppl_median,ppl_std,norm_median,norm_std\n")
+            
+            for result in book_results:
+                book_id = result['book_id']
+                sequences = len(result['seq_ending_positions'])
+                tokens = result['total_tokens']
+                calc_time = result['calc_time']
+                perplexities = result['seq_perplexities']
+                norms = [n for n in result['seq_ttt_norms'] if n is not None]
+                
+                ppl_median = np.median(perplexities) if perplexities else float('nan')
+                ppl_std = np.std(perplexities) if perplexities else float('nan')
+                norm_median = np.median(norms) if norms else float('nan')
+                norm_std = np.std(norms) if norms else float('nan')
+                
+                f.write(f"{book_id},{sequences},{tokens},{calc_time:.3f},{ppl_median:.6f},{ppl_std:.6f},{norm_median:.8f},{norm_std:.8f}\n")
+            
+            f.write("#\n")
+            
+            # Detailed raw data
+            f.write("# RAW_DATA\n")
+            f.write("# Format: book_id,position,perplexity,ttt_norm\n")
+            
+            for result in book_results:
+                book_id = result['book_id']
+                positions = result['seq_ending_positions']
+                perplexities = result['seq_perplexities']
+                norms = result['seq_ttt_norms']
+                
+                for pos, ppl, norm in zip(positions, perplexities, norms):
+                    norm_str = f"{norm:.8f}" if norm is not None else "NaN"
+                    f.write(f"{book_id},{pos},{ppl:.6f},{norm_str}\n")
+        
+        print(f"[SAVE] Results saved to: {filepath}")
+        return filepath
 
 def setup_model_and_mesh(flags: Any) -> Tuple[Any, Any, Any, Any, Any]:
     """Set up JAX mesh, model, and compilation."""
@@ -1003,8 +1111,17 @@ def main(argv):
             book_results, FLAGS.exp_name, FLAGS.exp_dir,
             FLAGS.ppl_seq_size, FLAGS.compute_chunk_size, FLAGS.tokens_per_book
         )
+        
+        # Save results to text file
+        total_time = time.time() - start_time
+        results_file = ResultsVisualizer.save_results_to_file(
+            book_results, FLAGS.exp_name, FLAGS.exp_dir,
+            FLAGS.ppl_seq_size, FLAGS.compute_chunk_size, FLAGS.tokens_per_book,
+            total_time
+        )
+        print(f"[MAIN] Results saved to: {results_file}")
     else:
-        print("[MAIN] No results to visualize")
+        print("[MAIN] No results to visualize or save")
     
     total_time = time.time() - start_time
     print(f"\n[MAIN] Evaluation completed in {total_time:.2f} seconds")
