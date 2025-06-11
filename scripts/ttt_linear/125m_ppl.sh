@@ -15,7 +15,7 @@ mkdir -p ${EXP_DIR}
 #export TTT_IMPLEMENTATION="ttt_layer_nobias_l2reg"
 
 if [ -z "$1" ]; then
-        TTT_IMPLEMENTATION="ttt_layer_nobias_randominit"
+        TTT_IMPLEMENTATION="ttt_layer_nobias_W0_noise"
         echo "No TTT implementation specified. Using default: ${TTT_IMPLEMENTATION}"
 else
         TTT_IMPLEMENTATION="$1"
@@ -27,6 +27,8 @@ EXP_NAME="${TTT_IMPLEMENTATION}-linear-125m-books-2k"
 # PRETRAINED="/home/zacharie/llm-meta-learning/adaptation/ttt/Test-Time-Training_models"
 # cp -r ${PRETRAINED}/${EXP_NAME}  ${EXP_DIR}/${EXP_NAME}
 # RESUME_EXP_NAME="ttt-linear-125m-books-2k"
+
+#RESUME_EXP_NAME="${EXP_NAME}"
 
 
 #debug for previous codebase

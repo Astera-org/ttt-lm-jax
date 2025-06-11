@@ -370,7 +370,11 @@ class PerplexityCalculator:
             
             # Forward pass
             try:
-                model_outputs, updated_vars = self.compiled_fn(params, padded_chunk, current_cache)
+                # Generate PRNG keys outside the compiled function
+                rng = JaxRNG(global_next_rng())
+                model_rngs = rng(self.model.config.rng_keys())
+                
+                model_outputs, updated_vars = self.compiled_fn(params, padded_chunk, current_cache, model_rngs)
                 
                 # Extract TTT norm
                 ttt_norm = None
@@ -808,7 +812,7 @@ def compile_model_function(mesh: Any, model: Any, params_sharding_spec: Any) -> 
     """Compile the model forward function."""
     print("[COMPILE] Compiling model function...")
     
-    def model_forward_fn(params, inputs, cache_variables=None):
+    def model_forward_fn(params, inputs, cache_variables, model_rngs):
         variables = {'params': params}
         
         if cache_variables is not None:
@@ -819,13 +823,14 @@ def compile_model_function(mesh: Any, model: Any, params_sharding_spec: Any) -> 
             variables,
             input_ids=inputs,
             deterministic=True,
-            mutable=['ttt_cache', 'conv_cache', 'pre_conv_cache']
+            mutable=['ttt_cache', 'conv_cache', 'pre_conv_cache'],
+            rngs=model_rngs
         )
     
     with mesh:
         compiled_fn = pjit.pjit(
             model_forward_fn,
-            in_shardings=(params_sharding_spec, PS(), PS()),
+            in_shardings=(params_sharding_spec, PS(), PS(), PS()),
             out_shardings=(PS(), PS())
         )
     
@@ -861,7 +866,12 @@ def debug_ttt_functionality(mesh: Any, model: Any, model_config: Any,
         try:
             # First forward pass
             print("[DEBUG] First forward pass...")
-            outputs1, vars1 = compiled_fn(params, test_input, None)
+            
+            # Generate PRNG keys outside the compiled function
+            rng = JaxRNG(global_next_rng())
+            model_rngs = rng(model.config.rng_keys())
+            
+            outputs1, vars1 = compiled_fn(params, test_input, None, model_rngs)
             
             print(f"[DEBUG] Output type: {type(outputs1)}")
             print(f"[DEBUG] Variables keys: {list(vars1.keys())}")
@@ -908,7 +918,11 @@ def debug_ttt_functionality(mesh: Any, model: Any, model_config: Any,
                     cache[cache_type] = vars1[cache_type]
             
             if cache:
-                outputs2, vars2 = compiled_fn(params, test_input, cache)
+                # Generate new PRNG keys for second pass
+                rng2 = JaxRNG(global_next_rng())
+                model_rngs2 = rng2(model.config.rng_keys())
+                
+                outputs2, vars2 = compiled_fn(params, test_input, cache, model_rngs2)
                 if 'ttt_cache' in vars2:
                     print("[DEBUG] TTT cache from second pass:")
                     norm_calc.inspect_frozen_dict_structure(vars2['ttt_cache'], max_depth=3)
