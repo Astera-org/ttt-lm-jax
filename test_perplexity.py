@@ -435,7 +435,9 @@ class PerplexityCalculator:
     
     def _update_cache(self, updated_vars: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Extract cache variables for next iteration."""
-        cache_types = ['ttt_cache', 'pre_conv_cache', 'conv_cache']
+        cache_types = ['ttt_cache', 'pre_conv_cache', 'conv_cache',
+        "mini_batch_counter",
+        "ttt_cache_slow","ttt_cache_medium"]
         cache = {}
         
         for cache_type in cache_types:
@@ -931,7 +933,10 @@ def compile_model_function(mesh: Any, model: Any, params_sharding_spec: Any) -> 
             variables,
             input_ids=inputs,
             deterministic=True,
-            mutable=['ttt_cache', 'conv_cache', 'pre_conv_cache'],
+            mutable=['ttt_cache', 'conv_cache', 'pre_conv_cache', 
+            "mini_batch_counter",
+            'ttt_cache_medium', 'ttt_cache_slow'
+            ],
             rngs=model_rngs
         )
     
@@ -1021,7 +1026,9 @@ def debug_ttt_functionality(mesh: Any, model: Any, model_config: Any,
             # Second forward pass with cache
             print("\n[DEBUG] Second forward pass with cache...")
             cache = {}
-            for cache_type in ['ttt_cache', 'pre_conv_cache', 'conv_cache']:
+            for cache_type in ['ttt_cache', 'pre_conv_cache', 'conv_cache',
+            "ttt_cache_medium", "ttt_cache_slow"
+            ]:
                 if cache_type in vars1:
                     cache[cache_type] = vars1[cache_type]
             

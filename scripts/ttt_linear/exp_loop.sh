@@ -1,8 +1,17 @@
+#!/bin/bash
+
+#ttt_layer_nobias_fixed_v0
+
 TTT_IMPLEMENTATIONS=(
-    "ttt_layer_nobias_l1l2reg"
-    "ttt_layer_nobias_l1reg"
-    "ttt_layer_nobias_l2reg"
-    "ttt_layer_nobias_orthonorm"
+
+
+ #   "custom.ttt_layer_nobias_bilevel_frobeniusv4"
+    "custom.ttt_layer_nobias_bilevel_frobeniusv5"
+    "custom.ttt_layer_nobias_bilevel_mixed"
+   
+
+    #"custom.ttt_layer_nobias_bilevel"
+
 )
 
 for TTT_IMPLEMENTATION in "${TTT_IMPLEMENTATIONS[@]}"; do
@@ -13,4 +22,4 @@ for TTT_IMPLEMENTATION in "${TTT_IMPLEMENTATIONS[@]}"; do
      #   exit 1
     fi
     echo "Experiment with TTT implementation ${TTT_IMPLEMENTATION} completed successfully."
-done
+done    

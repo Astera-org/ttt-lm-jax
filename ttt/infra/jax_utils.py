@@ -415,6 +415,14 @@ def log_ttt_stats(layer, ttt_stats_layer, x_axis, step):
     ttt_loss_mse_step_0 = ttt_stats_layer[2]
     ttt_loss_mse_step_1 = ttt_stats_layer[3]
 
+    # check if some are unsized
+    if any(
+        x is None or (isinstance(x, jax.Array) and x.shape == ()) for x in ttt_stats_layer
+    ):
+        logging.warning(f"TTT stats for layer {layer + 1} are not sized, skipping plot.")
+        return
+
+
     fig, ax = plt.subplots()
     ax.plot(x_axis, ssl_tgt_last_in_mini_batch_from_mean_mse, label="$\\|E[Y_{ssl}]-Y_{ssl}\\|^2$", color="green")
     ax.plot(x_axis, ttt_loss_mse_init, label="$\mathcal{L}(x_t; W_0)$", color="orange")

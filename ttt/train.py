@@ -347,6 +347,97 @@ def save_training_results(results_dict, exp_dir, exp_name):
                    f"{results_dict['grad_norms'][i]:.6f},{results_dict['learning_rates'][i]:.6e}\n")
 
 
+def count_model_parameters(params):
+    """Count total parameters and TTT-specific parameters in the model."""
+    flat_params = flatten_dict(params, sep='/')
+    
+    total_params = 0
+    ttt_params = 0
+    
+    # Keywords that identify TTT-related parameters
+    ttt_keywords = ['ttt_', 'W_1', 'W_2', 'b_1', 'b_2', 'ttt_norm', 'mini_batch_counter']
+    
+    param_breakdown = {}
+    
+    for param_name, param_value in flat_params.items():
+        param_count = param_value.size
+        total_params += param_count
+        
+        # Check if this is a TTT parameter
+        is_ttt_param = any(keyword in param_name.lower() for keyword in ttt_keywords)
+        if is_ttt_param:
+            ttt_params += param_count
+            
+        # Categorize parameters for detailed breakdown
+        if 'embed' in param_name.lower():
+            param_breakdown['embedding'] = param_breakdown.get('embedding', 0) + param_count
+        elif any(kw in param_name.lower() for kw in ttt_keywords):
+            param_breakdown['ttt'] = param_breakdown.get('ttt', 0) + param_count
+        elif 'attention' in param_name.lower() or 'attn' in param_name.lower():
+            param_breakdown['attention'] = param_breakdown.get('attention', 0) + param_count
+        elif 'feed_forward' in param_name.lower() or 'ffn' in param_name.lower() or 'mlp' in param_name.lower():
+            param_breakdown['feedforward'] = param_breakdown.get('feedforward', 0) + param_count
+        elif 'norm' in param_name.lower():
+            param_breakdown['normalization'] = param_breakdown.get('normalization', 0) + param_count
+        elif 'lm_head' in param_name.lower() or 'output' in param_name.lower():
+            param_breakdown['output'] = param_breakdown.get('output', 0) + param_count
+        else:
+            param_breakdown['other'] = param_breakdown.get('other', 0) + param_count
+    
+    return {
+        'total_params': total_params,
+        'ttt_params': ttt_params,
+        'non_ttt_params': total_params - ttt_params,
+        'breakdown': param_breakdown
+    }
+
+
+def print_model_parameter_info(params, model_config):
+    """Print detailed information about model parameters."""
+    param_info = count_model_parameters(params)
+    
+    master_print("="*60)
+    master_print("MODEL PARAMETER INFORMATION")
+    master_print("="*60)
+    
+    # Main parameter counts
+    total_params = param_info['total_params']
+    ttt_params = param_info['ttt_params']
+    non_ttt_params = param_info['non_ttt_params']
+    
+    master_print(f"Total Parameters:     {total_params:,} ({total_params/1e6:.2f}M)")
+    master_print(f"TTT Parameters:       {ttt_params:,} ({ttt_params/1e6:.2f}M)")
+    master_print(f"Non-TTT Parameters:   {non_ttt_params:,} ({non_ttt_params/1e6:.2f}M)")
+    
+    if total_params > 0:
+        ttt_percentage = (ttt_params / total_params) * 100
+        master_print(f"TTT Overhead:         {ttt_percentage:.2f}% of total parameters")
+    
+    master_print("-" * 60)
+    master_print("PARAMETER BREAKDOWN BY COMPONENT:")
+    
+    breakdown = param_info['breakdown']
+    for component, count in sorted(breakdown.items(), key=lambda x: x[1], reverse=True):
+        percentage = (count / total_params) * 100 if total_params > 0 else 0
+        master_print(f"  {component.capitalize():15}: {count:,} ({count/1e6:.2f}M, {percentage:.1f}%)")
+    
+    master_print("-" * 60)
+    master_print("MODEL CONFIGURATION:")
+    master_print(f"  Architecture:         {getattr(model_config, 'seq_modeling_block', 'unknown')}")
+    master_print(f"  Hidden Size:          {getattr(model_config, 'hidden_size', 'unknown'):,}")
+    master_print(f"  Number of Layers:     {getattr(model_config, 'num_hidden_layers', 'unknown')}")
+    master_print(f"  Attention Heads:      {getattr(model_config, 'num_attention_heads', 'unknown')}")
+    master_print(f"  Vocab Size:           {getattr(model_config, 'vocab_size', 'unknown'):,}")
+    master_print(f"  Sequence Length:      {getattr(model_config, 'max_sequence_length', 'unknown'):,}")
+    
+    if hasattr(model_config, 'mini_batch_size'):
+        master_print(f"  TTT Mini Batch Size:  {model_config.mini_batch_size}")
+    if hasattr(model_config, 'ttt_base_lr'):
+        master_print(f"  TTT Base LR:          {model_config.ttt_base_lr}")
+    
+    master_print("="*60)
+
+
 def main(argv):
 
 
@@ -455,6 +546,10 @@ def main(argv):
             sharded_create_trainstate_from_params,
             FLAGS,
         )
+
+        # Print model parameter information
+        if master_process:
+            print_model_parameter_info(train_state.params, model_config)
 
         train_loader_iterator = iter(train_loader)
 

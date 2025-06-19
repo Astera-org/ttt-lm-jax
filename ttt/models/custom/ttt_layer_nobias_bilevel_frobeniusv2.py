@@ -22,6 +22,20 @@ from ttt.infra.jax_utils import with_sharding_constraint, get_gradient_checkpoin
 Axes = Union[int, Sequence[int]]
 
 
+def frobenius_normalize(W, eps=1e-8):
+    """
+    Normalize a weight matrix by its Frobenius norm.
+    
+    Args:
+        W: Weight matrix to normalize
+        eps: Small epsilon to prevent division by zero
+    
+    Returns:
+        Normalized weight matrix
+    """
+    frob_norm = jnp.sqrt(jnp.sum(W ** 2) + eps)
+    return W / frob_norm
+
 def scan_remat_every_n_iterations_scan(f, n, carry, x):
     """
     Remat every n mini batches.
@@ -480,6 +494,111 @@ class TTTBase(nn.Module):
         z_batch = self.wo(XQW_batch)
         return z_batch
 
+    def update_slow_weights(self, ttt_params_slow_current, ttt_params_fast_current):
+        """Update slow weights based on fast weights with exponential moving average."""
+        # Exponential moving average update
+        alpha = 0.1  # Mixing coefficient for slow weight updates
+        
+        def update_param(slow_param, fast_param):
+            return (1 - alpha) * slow_param + alpha * fast_param
+        
+        return tree_map(update_param, ttt_params_slow_current, ttt_params_fast_current)
+
+    def process_mini_batch(
+        self,
+        XQ_mini_batch,
+        XK_mini_batch,
+        XV_mini_batch,
+        eta_mini_batch,
+        ttt_params_init,
+        ttt_params_mini_batch_init,
+        ttt_params_slow_mini_batch_init,
+        ttt_norm_params,
+        mini_batch_idx,
+        slow_update_freq
+    ):
+        """
+        Process a mini-batch updating both fast and slow weights in a single call.
+        
+        Args:
+            XQ_mini_batch, XK_mini_batch, XV_mini_batch: Input tensors for the mini-batch
+            eta_mini_batch: Learning rates for the mini-batch
+            ttt_params_init: Initial TTT parameters for the sequence
+            ttt_params_mini_batch_init: Current fast TTT parameters
+            ttt_params_slow_mini_batch_init: Current slow TTT parameters
+            ttt_norm_params: Layer norm parameters
+            mini_batch_idx: Current mini-batch index
+            slow_update_freq: Frequency of slow weight updates (passed as parameter to avoid tracing issues)
+        
+        Returns:
+            tuple: (new_fast_params, new_slow_params, combined_outputs)
+        """
+        # Process with fast weights (existing logic)
+        fast_params_updated, fast_outputs = self._process_mini_batch_with_params(
+            XQ_mini_batch, XK_mini_batch, XV_mini_batch, eta_mini_batch,
+            ttt_params_init, ttt_params_mini_batch_init, ttt_norm_params
+        )
+        
+        # Check if we should update slow weights using JAX-compatible control flow
+        should_update_slow = (mini_batch_idx + 1) % slow_update_freq == 0
+        
+        # Use jax.lax.cond for conditional execution instead of Python if/else
+        def update_slow_weights_branch():
+            return self.update_slow_weights(
+                ttt_params_slow_mini_batch_init, 
+                fast_params_updated
+            )
+        
+        def keep_slow_weights_branch():
+            return ttt_params_slow_mini_batch_init
+        
+        ttt_params_slow_updated = jax.lax.cond(
+            should_update_slow,
+            update_slow_weights_branch,
+            keep_slow_weights_branch
+        )
+        
+        # Process with slow weights for additional prediction
+        _, slow_outputs = self._process_mini_batch_with_params(
+            XQ_mini_batch, XK_mini_batch, XV_mini_batch, 
+            eta_mini_batch * 0.1,  # Slower learning rate for slow weights
+            ttt_params_init, ttt_params_slow_updated, ttt_norm_params
+        )
+        
+        # Combine outputs from fast and slow weights
+        output_mini_batch_fast, ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1 = fast_outputs
+        output_mini_batch_slow, _, _, _ = slow_outputs
+        
+        # Weighted combination of fast and slow outputs
+        output_mini_batch_combined = (
+            (1 - self.slow_weight_mix) * output_mini_batch_fast + 
+            self.slow_weight_mix * output_mini_batch_slow
+        )
+        
+        combined_outputs = (output_mini_batch_combined, ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1)
+        
+        return fast_params_updated, ttt_params_slow_updated, combined_outputs
+
+    def _process_mini_batch_with_params(
+        self,
+        XQ_mini_batch,
+        XK_mini_batch,
+        XV_mini_batch,
+        eta_mini_batch,
+        ttt_params_init,
+        ttt_params_mini_batch_init,
+        ttt_norm_params
+    ):
+        """
+        Core mini-batch processing logic (extracted from original process_mini_batch).
+        This method contains the actual TTT computation and can be called for both
+        fast and slow weights.
+        """
+        # This method should contain the original logic from your process_mini_batch
+        # but generalized to work with any set of parameters
+        # The implementation depends on whether this is TTTLinearBase or TTTMLPBase
+        raise NotImplementedError("Subclasses must implement this method")
+
     def ttt(self, XQ, XK, XV, eta):
         B, N = XV.shape[0], XV.shape[2] * XV.shape[3]
 
@@ -494,53 +613,23 @@ class TTTBase(nn.Module):
                     XV_mini_batch = inputs["XV"]
                     eta_mini_batch = inputs["eta"]
 
-                    # Process mini-batch with fast weights
-                    ttt_params_last_in_mini_batch, outputs = self.process_mini_batch(
+                    # Process mini-batch with both fast and slow weights in a single call
+                    # Pass slow_update_freq as a parameter to avoid tracing issues
+                    ttt_params_updated, ttt_params_slow_updated, combined_outputs = self.process_mini_batch(
                         XQ_mini_batch,
                         XK_mini_batch,
                         XV_mini_batch,
                         eta_mini_batch,
                         ttt_params_init,
                         ttt_params_mini_batch_init,
+                        ttt_params_slow_mini_batch_init,
                         ttt_norm_params,
+                        mini_batch_idx,
+                        self.slow_update_freq  # Pass as parameter to avoid tracing issues
                     )
                     
-                    # Check if we should update slow weights
-                    should_update_slow = (mini_batch_idx + 1) % self.slow_update_freq == 0
-                    
-                    # Update slow weights if needed
-                    ttt_params_slow_updated = jax.lax.cond(
-                        should_update_slow,
-                        lambda _: self.update_slow_weights(ttt_params_slow_mini_batch_init, ttt_params_last_in_mini_batch),
-                        lambda _: ttt_params_slow_mini_batch_init,
-                        None
-                    )
-                    
-                    # Process mini-batch with slow weights for additional prediction
-                    _, outputs_slow = self.process_mini_batch(
-                        XQ_mini_batch,
-                        XK_mini_batch,
-                        XV_mini_batch,
-                        eta_mini_batch * 0.1,  # Slower learning rate for slow weights
-                        ttt_params_init,
-                        ttt_params_slow_updated,
-                        ttt_norm_params,
-                    )
-                    
-                    # Combine outputs from fast and slow weights
-                    output_mini_batch_fast, ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1 = outputs
-                    output_mini_batch_slow, _, _, _ = outputs_slow
-                    
-                    # Weighted combination of fast and slow outputs
-                    output_mini_batch_combined = (
-                        (1 - self.slow_weight_mix) * output_mini_batch_fast + 
-                        self.slow_weight_mix * output_mini_batch_slow
-                    )
-                    
-                    outputs_combined = (output_mini_batch_combined, ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1)
-                    
-                    new_carry = (ttt_params_last_in_mini_batch, ttt_params_slow_updated, mini_batch_idx + 1)
-                    return new_carry, outputs_combined
+                    new_carry = (ttt_params_updated, ttt_params_slow_updated, mini_batch_idx + 1)
+                    return new_carry, combined_outputs
 
                 inputs = {"XQ": XQ, "XK": XK, "XV": XV, "eta": eta}
                 
@@ -568,11 +657,6 @@ class TTTBase(nn.Module):
         # Get cached parameters
         ttt_params_cache = self.ttt_cache.value if hasattr(self, 'ttt_cache') else None
         ttt_params_slow_cache = self.ttt_cache_slow.value if hasattr(self, 'ttt_cache_slow') else None
-
-        # jax.debug.print("TTT parameters cache: {ttt_params_cache}", ttt_params_cache=ttt_params_cache)
-        # jax.debug.print("TTT slow parameters cache: {ttt_params_slow_cache}", ttt_params_slow_cache=ttt_params_slow_cache)
-        # print("TTT parameters cache:", ttt_params_cache,file=sys.stderr)
-        # print("TTT slow parameters cache:", ttt_params_slow_cache, file=sys.stderr)
         
         outputs = update_embed(XQ, XK, XV, eta, ttt_params=ttt_params_cache, ttt_params_slow=ttt_params_slow_cache)
         Z, ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1, ttt_params_final, ttt_params_slow_final = outputs
@@ -585,16 +669,6 @@ class TTTBase(nn.Module):
             ttt_loss_mse_step_1 = ttt_loss_mse_step_1.mean(axis=(0, 1))
 
         return Z, (ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1, ttt_params_final, ttt_params_slow_final)
-
-    def update_slow_weights(self, ttt_params_slow_current, ttt_params_fast_current):
-        """Update slow weights based on fast weights with exponential moving average."""
-        # Exponential moving average update
-        alpha = 0.1  # Mixing coefficient for slow weight updates
-        
-        def update_param(slow_param, fast_param):
-            return (1 - alpha) * slow_param + alpha * fast_param
-        
-        return tree_map(update_param, ttt_params_slow_current, ttt_params_fast_current)
 
 
 class TTTLinearBase(TTTBase):
@@ -619,66 +693,67 @@ class TTTLinearBase(TTTBase):
         self.ttt_params = (self.W1,)
         self.ttt_params_slow = (self.W1_slow,)
 
-    def process_mini_batch(
-            self,
-            XQ_mini_batch,
-            XK_mini_batch,
-            XV_mini_batch,
-            eta_mini_batch,
-            ttt_params_init,
-            ttt_params_mini_batch_init,
-            ttt_norm_params
-        ):
-            W1_init, = ttt_params_mini_batch_init
-            square_eta_mini_batch = eta_mini_batch[: self.mini_batch_size]
-            last_eta_in_mini_batch = eta_mini_batch[-1][:, None]
+    def _process_mini_batch_with_params(
+        self,
+        XQ_mini_batch,
+        XK_mini_batch,
+        XV_mini_batch,
+        eta_mini_batch,
+        ttt_params_init,
+        ttt_params_mini_batch_init,
+        ttt_norm_params
+    ):
+        """Core TTT Linear processing logic."""
+        W1_init, = ttt_params_mini_batch_init
+        square_eta_mini_batch = eta_mini_batch[: self.mini_batch_size]
+        last_eta_in_mini_batch = eta_mini_batch[-1][:, None]
 
-            X1 = XK_mini_batch
-            Z1 = X1 @ W1_init
-            ttt_norm_out, ttt_norm_vjp = jax.vjp(lambda z: self.ttt_norm.apply({"params": ttt_norm_params}, z), Z1)
-            ssl_target = XV_mini_batch - XK_mini_batch
-            grad_l_wrt_ttt_norm_out = ttt_norm_out - ssl_target
-            grad_l_wrt_Z1 = ttt_norm_vjp(grad_l_wrt_ttt_norm_out)[0]
+        X1 = XK_mini_batch
+        Z1 = X1 @ W1_init
+        ttt_norm_out, ttt_norm_vjp = jax.vjp(lambda z: self.ttt_norm.apply({"params": ttt_norm_params}, z), Z1)
+        ssl_target = XV_mini_batch - XK_mini_batch
+        grad_l_wrt_ttt_norm_out = ttt_norm_out - ssl_target
+        grad_l_wrt_Z1 = ttt_norm_vjp(grad_l_wrt_ttt_norm_out)[0]
 
-            # Calculate TTT loss using W_init of the current mini-batch
-            if self.config.output_ttt_stats:
-                ttt_loss_mse_step_0 = (grad_l_wrt_ttt_norm_out[-1] ** 2).mean()
-            else:
-                ttt_loss_mse_step_0 = None
+        # Calculate TTT loss using W_init of the current mini-batch
+        if self.config.output_ttt_stats:
+            ttt_loss_mse_step_0 = (grad_l_wrt_ttt_norm_out[-1] ** 2).mean()
+        else:
+            ttt_loss_mse_step_0 = None
 
-            # Calculate TTT loss using W_init of the entire sequence
-            if self.config.output_ttt_stats:
-                W1_0, = ttt_params_init
-                Z1_0 = X1 @ W1_0
-                ttt_norm_out_0 = self.ttt_norm.apply({"params": ttt_norm_params}, Z1_0)
-                ttt_loss_mse_init = ((ttt_norm_out_0 - ssl_target)[-1] ** 2).mean()
-            else:
-                ttt_loss_mse_init = None
+        # Calculate TTT loss using W_init of the entire sequence
+        if self.config.output_ttt_stats:
+            W1_0, = ttt_params_init
+            Z1_0 = X1 @ W1_0
+            ttt_norm_out_0 = self.ttt_norm.apply({"params": ttt_norm_params}, Z1_0)
+            ttt_loss_mse_init = ((ttt_norm_out_0 - ssl_target)[-1] ** 2).mean()
+        else:
+            ttt_loss_mse_init = None
 
-            # Original adaptive behavior
-            X1_bar = XQ_mini_batch
-            Attn1 = jnp.tril(X1_bar @ X1.transpose(1, 0))
-            Z1_bar = X1_bar @ W1_init - (square_eta_mini_batch * Attn1) @ grad_l_wrt_Z1
-            ttt_norm_out_bar = self.ttt_norm.apply({"params": ttt_norm_params}, Z1_bar)
+        # Original adaptive behavior
+        X1_bar = XQ_mini_batch
+        Attn1 = jnp.tril(X1_bar @ X1.transpose(1, 0))
+        Z1_bar = X1_bar @ W1_init - (square_eta_mini_batch * Attn1) @ grad_l_wrt_Z1
+        ttt_norm_out_bar = self.ttt_norm.apply({"params": ttt_norm_params}, Z1_bar)
 
-            output_mini_batch = X1_bar + ttt_norm_out_bar
+        output_mini_batch = X1_bar + ttt_norm_out_bar
 
-            W1_bar_last = W1_init - (last_eta_in_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1
+        W1_bar_last = W1_init - (last_eta_in_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1
 
-            # Calculate ttt loss using the updated W_init by the current mini-batch
-            if self.config.output_ttt_stats:
-                X1_last_fwd_new = X1[-1:] @ W1_bar_last
-                X1_last_fwd_new = self.ttt_norm.apply({"params": ttt_norm_params}, X1_last_fwd_new)
-                ttt_loss_mse_step_1 = ((X1_last_fwd_new - ssl_target[-1:]) ** 2).mean()
-            else:
-                ttt_loss_mse_step_1 = None
+        # Calculate ttt loss using the updated W_init by the current mini-batch
+        if self.config.output_ttt_stats:
+            X1_last_fwd_new = X1[-1:] @ W1_bar_last
+            X1_last_fwd_new = self.ttt_norm.apply({"params": ttt_norm_params}, X1_last_fwd_new)
+            ttt_loss_mse_step_1 = ((X1_last_fwd_new - ssl_target[-1:]) ** 2).mean()
+        else:
+            ttt_loss_mse_step_1 = None
 
-            ttt_params_mini_batch_new = (W1_bar_last,)
+        ttt_params_mini_batch_new = (W1_bar_last,)
 
-            return (
-                ttt_params_mini_batch_new,
-                (output_mini_batch, ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1),
-            )
+        return (
+            ttt_params_mini_batch_new,
+            (output_mini_batch, ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1),
+        )
 
 
 class TTTLinear(TTTLinearBase):
@@ -803,7 +878,7 @@ class TTTMLPBase(TTTBase):
         self.ttt_params = (self.W1, self.W2)
         self.ttt_params_slow = (self.W1_slow, self.W2_slow)
 
-    def process_mini_batch(
+    def _process_mini_batch_with_params(
         self,
         XQ_mini_batch,
         XK_mini_batch,
@@ -813,6 +888,7 @@ class TTTMLPBase(TTTBase):
         ttt_params_mini_batch_init,
         ttt_norm_params
     ):
+        """Core TTT MLP processing logic."""
         W1_init, W2_init = ttt_params_mini_batch_init
         square_eta_mini_batch = eta_mini_batch[: self.mini_batch_size]
         last_eta_in_mini_batch = eta_mini_batch[-1][:, None]
@@ -858,6 +934,9 @@ class TTTMLPBase(TTTBase):
 
         W1_bar_last = W1_init - (last_eta_in_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1
         W2_bar_last = W2_init - (last_eta_in_mini_batch * X2).transpose(1, 0) @ grad_l_wrt_Z2
+
+        W1_bar_last = frobenius_normalize(W1_bar_last)
+        W2_bar_last = frobenius_normalize(W2_bar_last)
 
         if self.config.output_ttt_stats:
             X1_last_fwd_new = nn.gelu(X1[-1:] @ W1_bar_last) @ W2_bar_last

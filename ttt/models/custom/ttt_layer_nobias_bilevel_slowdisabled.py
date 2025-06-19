@@ -505,16 +505,16 @@ class TTTBase(nn.Module):
                         ttt_norm_params,
                     )
                     
-                    # Check if we should update slow weights
-                    should_update_slow = (mini_batch_idx + 1) % self.slow_update_freq == 0
+                    # # Check if we should update slow weights
+                    # should_update_slow = (mini_batch_idx + 1) % self.slow_update_freq == 0
                     
-                    # Update slow weights if needed
-                    ttt_params_slow_updated = jax.lax.cond(
-                        should_update_slow,
-                        lambda _: self.update_slow_weights(ttt_params_slow_mini_batch_init, ttt_params_last_in_mini_batch),
-                        lambda _: ttt_params_slow_mini_batch_init,
-                        None
-                    )
+                    # # Update slow weights if needed
+                    # ttt_params_slow_updated = jax.lax.cond(
+                    #     should_update_slow,
+                    #     lambda _: self.update_slow_weights(ttt_params_slow_mini_batch_init, ttt_params_last_in_mini_batch),
+                    #     lambda _: ttt_params_slow_mini_batch_init,
+                    #     None
+                    # )
                     
                     # Process mini-batch with slow weights for additional prediction
                     _, outputs_slow = self.process_mini_batch(
@@ -523,7 +523,7 @@ class TTTBase(nn.Module):
                         XV_mini_batch,
                         eta_mini_batch * 0.1,  # Slower learning rate for slow weights
                         ttt_params_init,
-                        ttt_params_slow_updated,
+                        ttt_params_slow_mini_batch_init,
                         ttt_norm_params,
                     )
                     
@@ -539,7 +539,7 @@ class TTTBase(nn.Module):
                     
                     outputs_combined = (output_mini_batch_combined, ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1)
                     
-                    new_carry = (ttt_params_last_in_mini_batch, ttt_params_slow_updated, mini_batch_idx + 1)
+                    new_carry = (ttt_params_last_in_mini_batch, ttt_params_slow_mini_batch_init, mini_batch_idx + 1)
                     return new_carry, outputs_combined
 
                 inputs = {"XQ": XQ, "XK": XK, "XV": XV, "eta": eta}

@@ -320,6 +320,12 @@ class ModelConfig(PretrainedConfig):
             ("seq_modeling_block/ttt_dense_0_slow", PS(None)),
             ("seq_modeling_block/ttt_dense_1_slow", PS(None)),
 
+            ('seq_modeling_block/ttt_output_proj', PS(None)),
+            ('seq_modeling_block/query_expand', PS(None)),
+
+            ("seq_modeling_block/fixed_dense_0", PS(None)),
+            ("seq_modeling_block/fixed_dense_1", PS(None)),
+
 
 
             # TTT and Pre-Conv caches - not sharded for simplicity

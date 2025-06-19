@@ -1,11 +1,11 @@
 #!/bin/bash
-DATA_PATH="~/llama-2-books3"
+DATA_PATH="/home/zacharie/llama-2-books3"
 # DATA_NAME="SaylorTwift/the_pile_books3_minus_gutenberg"
 
 SEQ_LEN=2048
 BS=64
 
-GRAD_ACCUM=4 # 256/128
+GRAD_ACCUM=4 # 256/16
 
 # Experiment details
 
@@ -42,7 +42,7 @@ LOAD_MODEL_CONFIG='125m-TTT'
 
 function get_update_model_config {
         local use_cache=$1
-        echo "dict( use_cache=${use_cache}, mini_batch_size=16, ttt_implementation=\"${TTT_IMPLEMENTATION}\",seq_modeling_block='ttt_linear', ttt_base_lr=0.5)"
+        echo "dict( use_cache=${use_cache}, mini_batch_size=16, ttt_implementation=\"${TTT_IMPLEMENTATION}\",seq_modeling_block='ttt_linear', ttt_base_lr=1.0)"
         }
 
 # ttt_intermediate_size=768,
@@ -51,12 +51,12 @@ function get_update_model_config {
 UPDATE_MODEL_CONFIG=$(get_update_model_config "False")
 
 
-export CUDA_VISIBLE_DEVICES=2,3 # 0,1,2,3,
+export CUDA_VISIBLE_DEVICES=4,5 # 0,1,2,3,
 
 
 uv run python3 -m ttt.train  \
         --mesh_dim='!1,-1,1' \
-        --dtype='bfloat16' \
+        --dtype='fp32' \
         --total_steps=4800 \
         --save_checkpoint_freq=1000 \
         --save_milestone_freq=2000 \
@@ -88,11 +88,11 @@ echo "Training complete. Now running perplexity evaluation..."
 UPDATE_MODEL_CONFIG=$(get_update_model_config "True")
 
 
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=0
 
 uv run python3 test_perplexity.py  \
         --mesh_dim='!1,1,1' \
-        --dtype='bfloat16' \
+        --dtype='fp32' \
         --load_model_config=${LOAD_MODEL_CONFIG} \
         --update_model_config="${UPDATE_MODEL_CONFIG}" \
         --exp_dir=${EXP_DIR} \
