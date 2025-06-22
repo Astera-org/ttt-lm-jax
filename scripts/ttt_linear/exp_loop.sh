@@ -5,9 +5,16 @@
 TTT_IMPLEMENTATIONS=(
 
 
+#    "custom.ttt_layer_nobias_bilevel_causalfix_v5"
+
+    "custom.ttt_layer_nobias_bilevel_causalfix_v8"
+
+   # "ttt_layer_nobias_bilevel_noleak"
+
+
  #   "custom.ttt_layer_nobias_bilevel_frobeniusv4"
-    "custom.ttt_layer_nobias_bilevel_frobeniusv5"
-    "custom.ttt_layer_nobias_bilevel_mixed"
+    # "custom.ttt_layer_nobias_bilevel_frobeniusv5"
+    # "custom.ttt_layer_nobias_bilevel_mixed"
    
 
     #"custom.ttt_layer_nobias_bilevel"

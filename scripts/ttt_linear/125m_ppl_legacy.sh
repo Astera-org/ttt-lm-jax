@@ -15,7 +15,7 @@ mkdir -p ${EXP_DIR}
 #export TTT_IMPLEMENTATION="custom.ttt_layer_nobias_l2reg"
 
 if [ -z "$1" ]; then
-        TTT_IMPLEMENTATION="custom.ttt_layer_nobias_2x"
+        TTT_IMPLEMENTATION="custom.ttt_layer_nobias_bilevel_causalfix_v2"
         echo "No TTT implementation specified. Using default: ${TTT_IMPLEMENTATION}"
 else
         TTT_IMPLEMENTATION="$1"

@@ -12,7 +12,7 @@ GRAD_ACCUM=16 # 256/16
 EXP_DIR=./current_exp
 mkdir -p ${EXP_DIR}
 
-export TTT_IMPLEMENTATION="ttt_layer_nobias_kx" #_orthonorm_hardnorm
+export TTT_IMPLEMENTATION="ttt_layer_nobias_bilevel_causalfix" #_orthonorm_hardnorm
 
 EXP_NAME="${TTT_IMPLEMENTATION}-linear-125m-books-2k"
 
