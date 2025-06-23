@@ -37,7 +37,6 @@ from ttt.infra.jax_utils import (
 )
 
 
-
 FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     seed=0,
     mesh_dim="-1,64,1",
@@ -64,17 +63,20 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     resume_step="",
     jax_distributed=JaxDistributedConfig.get_default_config(),
     is_rollback_reshuffle=False,
+    # Zero-order training options
+    use_zero_order_training=False,
+    zero_order_num_chunks=16,  # Fixed number of chunks (was zero_order_chunk_size)
+    zero_order_num_perturbations=2,
+    zero_order_perturbation_scale=1e-3,
+    zero_order_frequency=0,  # 0=never, 1=always, N=every N steps
+    zero_order_verbose=True,
 )
-
-# jax.config.update("jax_compilation_cache_dir", "jax_cache")
-# jax.config.update("jax_persistent_cache_min_entry_size_bytes", 1024 * 1024)  # 1MB minimum
-
 
 
 def make_train_step_fn(model, optimizer_info, model_config, accum_steps=1):
-
+    """Original gradient-based training step function."""
+    
     if accum_steps == 1:
-
         def train_step(train_state, rng, batch, ttt_lr_mult, output_ttt_stats=False):
             rng_generator = JaxRNG(rng)
             batch = with_sharding_constraint(batch, PS(("dp", "fsdp")))
@@ -103,7 +105,6 @@ def make_train_step_fn(model, optimizer_info, model_config, accum_steps=1):
             return (train_state, loss, ttt_stats, grads_norm, learning_rate, rng_generator())
 
     elif accum_steps > 1:
-
         def train_step(train_state, rng, batch, ttt_lr_mult, output_ttt_stats=False):
             rng_generator = JaxRNG(rng)
             rngs = rng_generator(model_config.rng_keys())
@@ -158,6 +159,116 @@ def make_train_step_fn(model, optimizer_info, model_config, accum_steps=1):
     return train_step
 
 
+def make_minimal_forward_fn(model, model_config):
+    """Create a minimal compiled forward function for zero-order training."""
+    def forward_fn(params, input_tokens, target_tokens, loss_masks, ttt_lr_mult, rng):
+        """Minimal forward pass - only what's needed for loss computation."""
+        outputs = model.apply(
+            params,
+            input_tokens,
+            ttt_lr_mult=ttt_lr_mult,
+            deterministic=True,  # Deterministic for ZO
+            rngs=rng,
+        )
+        loss, _ = cross_entropy_loss_and_accuracy(outputs.logits, target_tokens, loss_masks)
+        return loss
+    
+    return forward_fn
+
+
+def make_zero_order_train_step_fn(compiled_forward_fn, optimizer_info, FLAGS):
+    """Create PURE PYTHON zero-order training step - NO compilation of this function."""
+    
+    def zero_order_train_step(train_state, rng, batch, ttt_lr_mult):
+        """Pure Python zero-order training step - completely uncompiled."""
+        
+        # Extract batch data (these are already sharded)
+        input_tokens = batch["input_tokens"]
+        target_tokens = batch["target_tokens"]
+        loss_masks = batch["loss_masks"]
+        
+        rng_generator = JaxRNG(rng)
+        
+        # Baseline loss using compiled forward function
+        baseline_rng = rng_generator(["dropout", "params"])
+        baseline_loss = compiled_forward_fn(
+            train_state.params, input_tokens, target_tokens, loss_masks, ttt_lr_mult, baseline_rng
+        )
+        
+        if FLAGS.zero_order_verbose:
+            master_print(f"[ZO] Baseline loss: {baseline_loss}")
+        
+        # Initialize gradient estimate (pure Python)
+        grad_estimate = tree_map(jnp.zeros_like, train_state.params)
+        
+        # Perturbation loop (pure Python)
+        for pert_idx in range(FLAGS.zero_order_num_perturbations):
+            if FLAGS.zero_order_verbose:
+                master_print(f"[ZO] Perturbation {pert_idx + 1}/{FLAGS.zero_order_num_perturbations}")
+            
+            # Generate perturbation (minimal JAX ops)
+            perturbation_rng = rng_generator()
+            perturbation = tree_map(
+                lambda x: jax.random.normal(
+                    perturbation_rng, x.shape, dtype=x.dtype
+                ) * FLAGS.zero_order_perturbation_scale,
+                train_state.params
+            )
+            
+            # Perturbed parameters (pure Python tree_map)
+            perturbed_params = tree_map(
+                lambda p, delta: p + delta,
+                train_state.params, perturbation
+            )
+            
+            # Perturbed loss using compiled forward function
+            pert_rng = rng_generator(["dropout", "params"])
+            perturbed_loss = compiled_forward_fn(
+                perturbed_params, input_tokens, target_tokens, loss_masks, ttt_lr_mult, pert_rng
+            )
+            
+            # Finite difference gradient estimate (pure Python)
+            loss_diff = perturbed_loss - baseline_loss
+            perturbation_grad = tree_map(
+                lambda delta: (loss_diff / FLAGS.zero_order_perturbation_scale) * delta,
+                perturbation
+            )
+            
+            # Accumulate gradients (pure Python)
+            grad_estimate = tree_map(
+                lambda g, pg: g + pg / FLAGS.zero_order_num_perturbations,
+                grad_estimate, perturbation_grad
+            )
+            
+            if FLAGS.zero_order_verbose:
+                master_print(f"[ZO] Pert {pert_idx + 1}: loss_diff = {loss_diff}")
+        
+        # Apply gradients (uses existing compiled apply_gradients)
+        train_state = train_state.apply_gradients(grads=grad_estimate)
+        
+        # Compute metrics (minimal compilation)
+        learning_rate = optimizer_info["learning_rate_schedule"](train_state.step)
+        grads_norm = global_norm(grad_estimate)
+        
+        return (train_state, baseline_loss, None, grads_norm, learning_rate, rng_generator())
+    
+    return zero_order_train_step
+
+
+def should_use_zero_order(step: int, FLAGS) -> bool:
+    """Determine whether to use zero-order training."""
+    if not FLAGS.use_zero_order_training:
+        return False
+    
+    if FLAGS.zero_order_frequency <= 0:
+        return False
+    
+    if FLAGS.zero_order_frequency == 1:
+        return True
+    
+    return step % FLAGS.zero_order_frequency == 0
+
+
 def make_eval_step_fn(model, model_config):
     def eval_step(train_state, rng, batch):
         rng_generator = JaxRNG(rng)
@@ -186,12 +297,23 @@ def make_sharded_functions(model, optimizer, optimizer_info, model_config):
         )
         return TrainState.create(params=params, tx=optimizer, apply_fn=None)
 
-    train_step = make_train_step_fn(model, optimizer_info, model_config, FLAGS.accum_steps)
+    # Create gradient training function
+    gradient_train_step = make_train_step_fn(model, optimizer_info, model_config, FLAGS.accum_steps)
+    
+    # Create minimal forward function for zero-order (this will be compiled)
+    minimal_forward_fn = None
+    zero_order_train_step = None
+    
+    if FLAGS.use_zero_order_training:
+        master_print("[COMPILE] Creating minimal forward function for zero-order training...")
+        minimal_forward_fn = make_minimal_forward_fn(model, model_config)
+        
+        master_print("[COMPILE] Creating zero-order training step (pure Python, no compilation)...")
+        zero_order_train_step = make_zero_order_train_step_fn(minimal_forward_fn, optimizer_info, FLAGS)
+        master_print("[COMPILE] Zero-order training step created! (pure Python function)")
 
     train_state_shapes = jax.eval_shape(init_fn, next_rng())
-
     train_state_partition = match_partition_rules(model_config.get_partition_rules(), train_state_shapes)
-
     shard_fns, gather_fns = make_shard_and_gather_fns(train_state_partition, train_state_shapes)
 
     sharded_init_fn = pjit(init_fn, in_shardings=PS(), out_shardings=train_state_partition)
@@ -203,18 +325,48 @@ def make_sharded_functions(model, optimizer, optimizer_info, model_config):
         donate_argnums=(0,),
     )
 
-    sharded_train_step = pjit(
-        train_step,
-        in_shardings=(train_state_partition, PS(), PS(), PS()),
+    # Compile gradient training step
+    master_print("[COMPILE] Compiling gradient training step...")
+    sharded_gradient_train_step = pjit(
+        gradient_train_step,
+        in_shardings=(train_state_partition, PS(), PS(), PS(), PS()),
         out_shardings=(train_state_partition, PS(), PS(), PS(), PS(), PS()),
-        static_argnums=4,
+        static_argnums=(4,),  # output_ttt_stats
         donate_argnums=(0,),
     )
+    master_print("[COMPILE] Gradient training step compiled!")
+
+    # Compile ONLY the minimal forward function for zero-order (not the full zero-order step)
+    sharded_minimal_forward_fn = None
+    if minimal_forward_fn is not None:
+        master_print("[COMPILE] Compiling minimal forward function for zero-order (tiny compilation)...")
+        sharded_minimal_forward_fn = pjit(
+            minimal_forward_fn,
+            in_shardings=(train_state_partition.params, PS(), PS(), PS(), PS(), PS()),
+            out_shardings=PS(),
+        )
+        master_print("[COMPILE] Minimal forward function compiled!")
+        
+        # Update zero-order step to use sharded forward function
+        zero_order_train_step = make_zero_order_train_step_fn(sharded_minimal_forward_fn, optimizer_info, FLAGS)
+        master_print("[COMPILE] Zero-order step updated to use sharded forward function")
+    else:
+        master_print("[COMPILE] Zero-order training disabled, skipping forward function compilation")
+
+    # Pure Python runtime selector (NO compilation)
+    def runtime_train_step_selector(train_state, rng, batch, ttt_lr_mult, output_ttt_stats=False, use_zero_order=False):
+        """Pure Python runtime selector - no compilation overhead."""
+        if use_zero_order and zero_order_train_step is not None:
+            # Call pure Python zero-order function directly
+            return zero_order_train_step(train_state, rng, batch, ttt_lr_mult)
+        else:
+            # Call compiled gradient training
+            return sharded_gradient_train_step(train_state, rng, batch, ttt_lr_mult, output_ttt_stats)
 
     return (
         sharded_init_fn,
         sharded_create_trainstate_from_params,
-        sharded_train_step,
+        runtime_train_step_selector,  # Pure Python function - NO pjit
         shard_fns,
         gather_fns,
         train_state_shapes,
@@ -243,7 +395,6 @@ def make_save_checkpoint(checkpointer, gather_fns, variant, flags_config_dict, m
 
 
 def make_get_ttt_lr_mult(model_config):
-
     if (
         hasattr(model_config, "ttt_base_lr_init")
         and model_config.ttt_base_lr_init > 0
@@ -261,7 +412,6 @@ def make_get_ttt_lr_mult(model_config):
             return ttt_lr_mult
 
     else:
-
         def get_ttt_lr_mult(step):
             ttt_lr_mult = jnp.ones((1,), dtype=jnp.bfloat16)
             return ttt_lr_mult
@@ -326,11 +476,10 @@ def initialize_or_resume(
 
 
 def save_training_results(results_dict, exp_dir, exp_name):
-    """Save training results to a text file in an easy-to-parse format."""
+    """Save training results to a text file."""
     results_file = osp.join(exp_dir, exp_name, "training_results.txt")
     
     with open(results_file, 'w') as f:
-        # Write header with metadata
         f.write("# Training Results\n")
         f.write(f"experiment_name: {exp_name}\n")
         f.write(f"total_steps: {len(results_dict['steps'])}\n")
@@ -340,21 +489,20 @@ def save_training_results(results_dict, exp_dir, exp_name):
         f.write(f"final_grad_norm: {results_dict['grad_norms'][-1]:.6f}\n")
         f.write("\n")
         
-        # Write detailed metrics in CSV-like format
-        f.write("# Detailed Metrics (step,loss,grad_norm,learning_rate)\n")
+        f.write("# Detailed Metrics (step,loss,grad_norm,learning_rate,method)\n")
         for i in range(len(results_dict['steps'])):
+            method = results_dict.get('methods', ['gradient'] * len(results_dict['steps']))[i]
             f.write(f"{results_dict['steps'][i]},{results_dict['losses'][i]:.6f},"
-                   f"{results_dict['grad_norms'][i]:.6f},{results_dict['learning_rates'][i]:.6e}\n")
+                   f"{results_dict['grad_norms'][i]:.6f},{results_dict['learning_rates'][i]:.6e},{method}\n")
 
 
 def count_model_parameters(params):
-    """Count total parameters and TTT-specific parameters in the model."""
+    """Count total and TTT-specific parameters."""
     flat_params = flatten_dict(params, sep='/')
     
     total_params = 0
     ttt_params = 0
     
-    # Keywords that identify TTT-related parameters
     ttt_keywords = ['ttt_', 'W_1', 'W_2', 'b_1', 'b_2', 'ttt_norm', 'mini_batch_counter']
     
     param_breakdown = {}
@@ -363,12 +511,10 @@ def count_model_parameters(params):
         param_count = param_value.size
         total_params += param_count
         
-        # Check if this is a TTT parameter
         is_ttt_param = any(keyword in param_name.lower() for keyword in ttt_keywords)
         if is_ttt_param:
             ttt_params += param_count
             
-        # Categorize parameters for detailed breakdown
         if 'embed' in param_name.lower():
             param_breakdown['embedding'] = param_breakdown.get('embedding', 0) + param_count
         elif any(kw in param_name.lower() for kw in ttt_keywords):
@@ -393,14 +539,13 @@ def count_model_parameters(params):
 
 
 def print_model_parameter_info(params, model_config):
-    """Print detailed information about model parameters."""
+    """Print detailed parameter information."""
     param_info = count_model_parameters(params)
     
     master_print("="*60)
     master_print("MODEL PARAMETER INFORMATION")
     master_print("="*60)
     
-    # Main parameter counts
     total_params = param_info['total_params']
     ttt_params = param_info['ttt_params']
     non_ttt_params = param_info['non_ttt_params']
@@ -438,10 +583,21 @@ def print_model_parameter_info(params, model_config):
     master_print("="*60)
 
 
+def print_zero_order_config(FLAGS):
+    """Print zero-order training configuration."""
+    if FLAGS.use_zero_order_training:
+        master_print("="*60)
+        master_print("ZERO-ORDER TRAINING CONFIGURATION")
+        master_print("="*60)
+        master_print(f"Enabled:              {FLAGS.use_zero_order_training}")
+        master_print(f"Frequency:            {FLAGS.zero_order_frequency} (0=never, 1=always, N=every N steps)")
+        master_print(f"Num Perturbations:    {FLAGS.zero_order_num_perturbations}")
+        master_print(f"Perturbation Scale:   {FLAGS.zero_order_perturbation_scale}")
+        master_print(f"Verbose Logging:      {FLAGS.zero_order_verbose}")
+        master_print("="*60)
+
+
 def main(argv):
-
-
-
     JaxDistributedConfig.initialize(FLAGS.jax_distributed)
     variant = mlxu.get_user_flags(FLAGS, FLAGS_DEF)
     flags_config_dict = mlxu.user_flags_to_config_dict(FLAGS, FLAGS_DEF)
@@ -458,6 +614,10 @@ def main(argv):
     seq_length = FLAGS.seq_length
     global_batch_size = FLAGS.global_batch_size
     is_rollback_reshuffle = FLAGS.is_rollback_reshuffle
+
+    # Print zero-order configuration
+    if master_process:
+        print_zero_order_config(FLAGS)
 
     # Create dataloader
     data_module = LMDataModule(
@@ -478,27 +638,39 @@ def main(argv):
     data_module.setup()
     train_loader = data_module.train_dataloader()
 
-    # Update model model_config
+    # Model configuration
     if FLAGS.load_model_config != "":
         model_config = ModelConfig.load_config(FLAGS.load_model_config)
     else:
         raise RuntimeError(f"model_config must be specified")
+    
     if FLAGS.update_model_config:
         update_dic = eval(FLAGS.update_model_config)
-        print("update_dic",update_dic)
+        print("update_dic", update_dic)
         for key, value in update_dic.items():
             if hasattr(model_config, key):
                 setattr(model_config, key, value)
             else:
                 raise KeyError(f"Update key {key} not in model_config")
     
-    
     model_config.vocab_size = data_module.vocab_size
     model_config.max_sequence_length = seq_length
+    
+    # Ensure pad_token_id is properly set
+    if not hasattr(model_config, 'pad_token_id') or model_config.pad_token_id is None:
+        # Get pad_token_id from tokenizer
+        tokenizer = data_module.tokenizer
+        if hasattr(tokenizer, 'pad_token_id') and tokenizer.pad_token_id is not None:
+            model_config.pad_token_id = tokenizer.pad_token_id
+        elif hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id is not None:
+            model_config.pad_token_id = tokenizer.eos_token_id
+        else:
+            model_config.pad_token_id = 0  # Fallback to 0
+        master_print(f"Set model_config.pad_token_id = {model_config.pad_token_id}")
+    
     flags_config_dict.model_config = model_config
 
     mesh = model_config.get_jax_mesh(FLAGS.mesh_dim)
-
 
     # Create WandB run and checkpointer
     if master_process:
@@ -512,14 +684,14 @@ def main(argv):
         FLAGS.optimizer, get_weight_decay_mask(model_config.get_weight_decay_exclusions())
     )
 
-    # Helper function for dynamic TTT learning rate
+    # TTT learning rate helper
     get_ttt_lr_mult = make_get_ttt_lr_mult(model_config)
 
-    # Create sharded train functions
+    # Create sharded functions
     (
         sharded_init_fn,
         sharded_create_trainstate_from_params,
-        sharded_train_step,
+        runtime_train_step_selector,  # Pure Python runtime selector
         shard_fns,
         gather_fns,
         train_state_shapes,
@@ -532,10 +704,7 @@ def main(argv):
 
     print(f"Using mesh: {mesh}")
     with mesh:
-
         sharded_rng = next_rng()
-
-        
 
         start_step, train_state, train_loader = initialize_or_resume(
             checkpointer,
@@ -558,7 +727,8 @@ def main(argv):
             'steps': [],
             'losses': [],
             'grad_norms': [],
-            'learning_rates': []
+            'learning_rates': [],
+            'methods': []
         }
 
         for step in tqdm(
@@ -597,34 +767,61 @@ def main(argv):
                 batch[k] = batch[k].numpy()
 
             ttt_lr_mult = get_ttt_lr_mult(step)
+            
+            # Determine training method
+            use_zero_order = should_use_zero_order(step, FLAGS)
+            method = "zero-order" if use_zero_order else "gradient"
+            
+            # Debug logging for zero-order training
+            if step <= 5 or step % 100 == 0:  # Log first few steps and every 100 steps
+                master_print(f"[STEP {step}] ZO Config: enabled={FLAGS.use_zero_order_training}, "
+                           f"freq={FLAGS.zero_order_frequency}, use_zo={use_zero_order}")
+            
+            if FLAGS.zero_order_verbose and use_zero_order:
+                master_print(f"[STEP {step}] Using zero-order training (pure Python)")
+            elif FLAGS.zero_order_verbose:
+                master_print(f"[STEP {step}] Using gradient training (compiled)")
+            
             output_ttt_stats = (
                 FLAGS.save_milestone_freq > 0
                 and step % FLAGS.save_milestone_freq == 0
                 and model_config.seq_modeling_block != "self_attention"
+                and not use_zero_order  # TTT stats not supported in zero-order mode
             )
 
-            train_state, loss, ttt_stats, grads_norm, learning_rate, sharded_rng = sharded_train_step(
-                train_state, sharded_rng, batch, ttt_lr_mult, output_ttt_stats
+            train_state, loss, ttt_stats, grads_norm, learning_rate, sharded_rng = runtime_train_step_selector(
+                train_state, sharded_rng, batch, ttt_lr_mult, output_ttt_stats, use_zero_order
             )
 
-            # Store results for later saving
+            # Store results
             if master_process:
                 results_dict['steps'].append(step)
                 results_dict['losses'].append(float(loss.item()))
                 results_dict['grad_norms'].append(float(grads_norm.item()))
                 results_dict['learning_rates'].append(float(learning_rate.item()))
+                results_dict['methods'].append(method)
 
             if master_process:
+                # Convert training method to numeric for WandB compatibility
+                training_method_numeric = 1 if use_zero_order else 0
+                zero_order_steps = 1 if use_zero_order else 0
+                
+                # Debug: Print what we're logging
+                if step <= 3 or step % 100 == 0:
+                    master_print(f"[WANDB] Step {step}: method={training_method_numeric}, zo_steps={zero_order_steps}")
+                
                 wandb.log(
                     {
                         "Train Loss": loss.item(),
                         "Gradient Norm": grads_norm.item(),
                         "Learning Rate": learning_rate.item(),
+                        "Training Method (0=grad, 1=ZO)": training_method_numeric,
+                        "Zero Order Steps": zero_order_steps,
                     },
                     step=step,
                 )
 
-                if output_ttt_stats:
+                if output_ttt_stats and ttt_stats is not None:
                     for layer in range(len(ttt_stats)):
                         ttt_stats_layer = process_allgather(ttt_stats[layer])
                         n_mini_batch = len(ttt_stats_layer[0])
@@ -639,7 +836,6 @@ def main(argv):
 
             if step == FLAGS.total_steps:
                 master_print("Training has completed!")
-                # Save training results to text file
                 if master_process:
                     master_print("Saving training results...")
                     save_training_results(results_dict, FLAGS.exp_dir, FLAGS.exp_name)

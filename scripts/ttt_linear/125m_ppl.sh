@@ -15,7 +15,7 @@ mkdir -p ${EXP_DIR}
 #export TTT_IMPLEMENTATION="custom.ttt_layer_nobias_l2reg"
 
 if [ -z "$1" ]; then
-        TTT_IMPLEMENTATION="custom.ttt_layer_nobias_2x"
+        TTT_IMPLEMENTATION="custom.ttt_layer_nobias"
         echo "No TTT implementation specified. Using default: ${TTT_IMPLEMENTATION}"
 else
         TTT_IMPLEMENTATION="$1"
@@ -51,12 +51,14 @@ function get_update_model_config {
 UPDATE_MODEL_CONFIG=$(get_update_model_config "False")
 
 
-export CUDA_VISIBLE_DEVICES=2,3,4,5 # 0,1,2,3,
-
+export CUDA_VISIBLE_DEVICES=0,1,2,3 #2,3,4,5 # 0,1,2,3,
+export NCCL_DEBUG=INFO
 
 uv run python3 -m ttt.train  \
         --mesh_dim='!1,-1,1' \
         --dtype='bfloat16' \
+        --use_zero_order_training=True \
+        --zero_order_frequency=1 \
         --total_steps=4800 \
         --save_checkpoint_freq=1000 \
         --save_milestone_freq=2000 \
