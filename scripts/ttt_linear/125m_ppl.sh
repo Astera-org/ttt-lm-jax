@@ -51,7 +51,7 @@ function get_update_model_config {
 UPDATE_MODEL_CONFIG=$(get_update_model_config "False")
 
 
-export CUDA_VISIBLE_DEVICES=0,1,2,3 #2,3,4,5 # 0,1,2,3,
+export CUDA_VISIBLE_DEVICES=0,1 #2,3,4,5 # 0,1,2,3,
 export NCCL_DEBUG=INFO
 
 uv run python3 -m ttt.train  \
@@ -59,7 +59,7 @@ uv run python3 -m ttt.train  \
         --dtype='bfloat16' \
         --use_zero_order_training=True \
         --zero_order_frequency=1 \
-        --total_steps=4800 \
+        --total_steps=8800 \
         --save_checkpoint_freq=1000 \
         --save_milestone_freq=2000 \
         --load_model_config=${LOAD_MODEL_CONFIG} \

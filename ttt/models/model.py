@@ -330,6 +330,8 @@ class ModelConfig(PretrainedConfig):
 
             # TTT and Pre-Conv caches - not sharded for simplicity
             ("seq_modeling_block/ttt_cache/weights", PS(None)),
+            ("seq_modeling_block/ttt_cache_fast/weights_fast", PS(None)),
+            ("seq_modeling_block/ttt_cache_slow/weights_slow", PS(None)),
             ("seq_modeling_block/conv_cache/states", PS(None)),
             ("conv/pre_conv_cache/states", PS(None)),
 
