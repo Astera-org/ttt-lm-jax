@@ -3,9 +3,9 @@ DATA_PATH="~/llama-2-books3"
 # DATA_NAME="SaylorTwift/the_pile_books3_minus_gutenberg"
 
 SEQ_LEN=2048
-BS=64
+BS=128
 
-GRAD_ACCUM=4 # 256/128
+GRAD_ACCUM=2 # 256/128
 
 # Experiment details
 
@@ -51,7 +51,7 @@ function get_update_model_config {
 UPDATE_MODEL_CONFIG=$(get_update_model_config "False")
 
 
-export CUDA_VISIBLE_DEVICES=0,1 #2,3,4,5 # 0,1,2,3,
+export CUDA_VISIBLE_DEVICES=0,1,2,3 #2,3,4,5 # 0,1,2,3,
 export NCCL_DEBUG=INFO
 
 uv run python3 -m ttt.train  \
