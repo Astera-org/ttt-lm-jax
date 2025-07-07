@@ -69,8 +69,8 @@ jax_distributed=JaxDistributedConfig.get_default_config(),
 is_rollback_reshuffle=False,
 # Zero-order training options
 use_zero_order_training=False,
-zero_order_num_chunks=16, # number of chunks to simulate a longer sequence
-zero_order_num_perturbations=4,
+zero_order_num_chunks=2, # number of chunks to simulate a longer sequence
+zero_order_num_perturbations=64,
 zero_order_perturbation_scale=1e-3,
 zero_order_frequency=0, # 0=never, 1=always, N=every N steps
 zero_order_verbose=True,
@@ -386,12 +386,12 @@ def make_sharded_functions(model, optimizer, optimizer_info, model_config):
     # Compile gradient training step
     master_print("[COMPILE] Compiling gradient training step...")
     sharded_gradient_train_step = pjit(
-        gradient_train_step,
-        in_shardings=(train_state_partition, PS(), PS(), PS(), PS()),
-        out_shardings=(train_state_partition, PS(), PS(), PS(), PS(), PS()),
-        static_argnums=(4,), # output_ttt_stats
-        donate_argnums=(0,),
-    )
+    gradient_train_step,
+    in_shardings=(train_state_partition, PS(), PS(), PS()),  # 4 shardings
+    out_shardings=(train_state_partition, PS(), PS(), PS(), PS(), PS()),
+    static_argnums=(4,), # output_ttt_stats
+    donate_argnums=(0,),
+)
     master_print("[COMPILE] Gradient training step compiled!")
 
 

@@ -51,7 +51,7 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     compute_chunk_size=8192,
     books_dir="./data/gutenberg/",
     num_books=30,
-    tokens_per_book=327680,  # 32768 * 10
+    tokens_per_book=8192,
     ppl_seq_size=2048,
     skip_start_chars=1024,
     debug_mode=False,
@@ -905,16 +905,40 @@ def load_model_checkpoint(flags: Any, mesh: Any, model: Any, model_config: Any) 
     
     with mesh:
         param_shard_fns, _ = make_shard_and_gather_fns(params_sharding_spec, abstract_params_shape)
-        loaded_params = StreamingCheckpointer.load_checkpoint(
-            path=checkpoint_path,
-            target=None,
-            shard_fns=param_shard_fns,
-            remove_dict_prefix=('params', 'params')
-        )
+        
+        # First try to load the full checkpoint structure
+        try:
+            loaded_params = StreamingCheckpointer.load_checkpoint(
+                path=checkpoint_path,
+                target=None,
+                shard_fns=param_shard_fns,
+                remove_dict_prefix=('params',)  # Only remove 'params' prefix
+            )
+        except Exception as e:
+            print(f"[CHECKPOINT] First attempt failed: {e}")
+            # Try alternative prefix removal
+            loaded_params = StreamingCheckpointer.load_checkpoint(
+                path=checkpoint_path,
+                target=None,
+                shard_fns=param_shard_fns,
+                remove_dict_prefix=None  # Don't remove any prefix
+            )
+            # If loaded_params has a 'params' key, extract it
+            if isinstance(loaded_params, dict) and 'params' in loaded_params:
+                loaded_params = loaded_params['params']
     
     # Convert to FrozenDict
     loaded_params = freeze(loaded_params)
     print("[CHECKPOINT] Parameters loaded and frozen successfully")
+    
+    # Debug: print the structure to understand what we have
+    if flags.debug_mode:
+        print(f"[CHECKPOINT] Loaded params type: {type(loaded_params)}")
+        if hasattr(loaded_params, 'keys'):
+            print(f"[CHECKPOINT] Loaded params keys: {list(loaded_params.keys())}")
+        print(f"[CHECKPOINT] Abstract params type: {type(abstract_params_shape)}")
+        if hasattr(abstract_params_shape, 'keys'):
+            print(f"[CHECKPOINT] Abstract params keys: {list(abstract_params_shape.keys())}")
     
     return loaded_params, params_sharding_spec
 
@@ -926,8 +950,8 @@ def compile_model_function(mesh: Any, model: Any, params_sharding_spec: Any) -> 
         variables = {'params': params}
         
         if cache_variables is not None:
-            for cache_type, cache_value in cache_variables.items():
-                variables[cache_type] = cache_value
+            for cache_type, cache_variables in cache_variables.items():
+                variables[cache_type] = cache_variables
         
         return model.apply(
             variables,
