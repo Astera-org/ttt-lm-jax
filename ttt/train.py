@@ -74,6 +74,7 @@ zero_order_num_perturbations=64,
 zero_order_perturbation_scale=1e-3,
 zero_order_frequency=0, # 0=never, 1=always, N=every N steps
 zero_order_verbose=True,
+    zero_order_max_grad_norm=1.0,
 )
 
 
@@ -296,6 +297,16 @@ def make_zero_order_train_step_fn(compiled_forward_fn, optimizer_info, FLAGS):
             if FLAGS.zero_order_verbose:
                 master_print(f"[ZO] Pert {pert_idx + 1}: loss_diff = {loss_diff:.6f}")
         
+
+
+        max_grad_norm = 1.0  
+        grad_estimate = tree_map(
+            lambda g: jnp.clip(g, -max_grad_norm, max_grad_norm), 
+            grad_estimate
+        )
+        
+
+
         # 3. Apply gradients.
         train_state = train_state.apply_gradients(grads=grad_estimate)
         

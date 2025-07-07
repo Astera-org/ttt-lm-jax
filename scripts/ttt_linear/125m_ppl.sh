@@ -77,8 +77,8 @@ uv run python3 -m ttt.train  \
         --optimizer.adamw_optimizer.lr_warmup_steps=480 \
         --optimizer.adamw_optimizer.lr_decay_steps=4800 \
          --zero_order_frequency=30 \
-         --zero_order_perturbation_scale=1e-5 \
-         --zero_order_num_perturbations=64 \
+         --zero_order_perturbation_scale=1e-2 \
+         --zero_order_num_perturbations=512 \
          --use_zero_order_training=True 
 
 
