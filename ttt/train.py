@@ -281,7 +281,7 @@ def compute_zero_order_gradient_estimate(compiled_forward_fn, params, chunked_ba
         # Calculate finite difference gradient.
         loss_diff = perturbed_loss - baseline_loss
         perturbation_grad = tree_map(
-            lambda delta: (loss_diff / perturbation_scale*2) * delta, # Correct scaling
+            lambda delta: (loss_diff / perturbation_scale) * delta, # Correct scaling
             perturbation
         )
         
