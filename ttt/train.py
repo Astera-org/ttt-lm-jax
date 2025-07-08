@@ -232,7 +232,7 @@ def make_minimal_forward_fn(model, model_config):
 def compute_zero_order_gradient_estimate(compiled_forward_fn, params, chunked_batch, ttt_lr_mult, 
                                        rng_generator, num_chunks, num_perturbations, 
                                        perturbation_scale, verbose=False):
-    """Compute zero-order gradient estimate for given number of chunks."""
+    """Compute zero-order gradient estimate using central differences for given number of chunks."""
     
     def compute_total_loss(params_to_eval):
         """Helper to compute total loss over all chunks for a given set of parameters."""
@@ -259,44 +259,51 @@ def compute_zero_order_gradient_estimate(compiled_forward_fn, params, chunked_ba
         
         return total_loss / num_chunks # Return the average loss over all chunks.
 
-    # 1. Calculate baseline loss over all chunks.
-    baseline_loss = compute_total_loss(params)
-    
-    # 2. Estimate gradient via perturbations.
+    # Initialize gradient estimate
     grad_estimate = tree_map(jnp.zeros_like, params)
+    
+    # Estimate gradient via central differences
     for pert_idx in range(num_perturbations):
-        # Generate a random perturbation.
+        # Generate a random perturbation direction
         perturbation_rng = rng_generator()
         perturbation = tree_map(
             lambda x: jax.random.normal(perturbation_rng, x.shape, dtype=x.dtype) * perturbation_scale,
             params
         )
         
-        # Apply perturbation.
-        perturbed_params = tree_map(lambda p, delta: p + delta, params, perturbation)
+        # Apply positive perturbation: θ + ε
+        perturbed_params_pos = tree_map(lambda p, delta: p + delta, params, perturbation)
         
-        # Calculate perturbed loss over all chunks.
-        perturbed_loss = compute_total_loss(perturbed_params)
+        # Apply negative perturbation: θ - ε  
+        perturbed_params_neg = tree_map(lambda p, delta: p - delta, params, perturbation)
         
-        # Calculate finite difference gradient.
-        loss_diff = perturbed_loss - baseline_loss
+        # Calculate losses at both points
+        loss_pos = compute_total_loss(perturbed_params_pos)
+        loss_neg = compute_total_loss(perturbed_params_neg)
+        
+        # Central difference gradient: (f(θ + ε) - f(θ - ε)) / (2ε)
+        loss_diff = loss_pos - loss_neg
         perturbation_grad = tree_map(
-            lambda delta: (loss_diff / perturbation_scale) * delta, # Correct scaling
+            lambda delta: (loss_diff / (2 * perturbation_scale)) * delta,
             perturbation
         )
         
-        # Accumulate gradient estimate.
+        # Accumulate gradient estimate
         grad_estimate = tree_map(
             lambda g, pg: g + pg / num_perturbations,
             grad_estimate, perturbation_grad
         )
 
     # Apply gradient clipping
-    max_grad_norm = 1.0  
+    max_grad_norm = FLAGS.zero_order_max_grad_norm
     grad_estimate = tree_map(
         lambda g: jnp.clip(g, -max_grad_norm, max_grad_norm), 
         grad_estimate
     )
+    
+    # Estimate baseline loss as average of positive and negative evaluations
+    # (this approximates f(θ) using the central difference points)
+    baseline_loss = (loss_pos + loss_neg) / 2
     
     return grad_estimate, baseline_loss
 
@@ -328,7 +335,7 @@ def make_debug_gradient_fn(model, model_config):
 
 
 def make_zero_order_train_step_fn(compiled_forward_fn, optimizer_info, FLAGS, model=None, model_config=None):
-    """Create a PURE PYTHON zero-order training step that processes the batch in chunks."""
+    """Create a PURE PYTHON zero-order training step that processes the batch in chunks using central differences."""
     
     # Create debug gradient function if debug mode is enabled
     debug_gradient_fn = None
@@ -336,7 +343,7 @@ def make_zero_order_train_step_fn(compiled_forward_fn, optimizer_info, FLAGS, mo
         debug_gradient_fn = make_debug_gradient_fn(model, model_config)
     
     def zero_order_train_step(train_state, rng, batch, ttt_lr_mult):
-        """Pure Python zero-order training step that simulates a long sequence."""
+        """Pure Python zero-order training step that simulates a long sequence using central differences."""
         rng_generator = JaxRNG(rng)
         num_chunks = FLAGS.zero_order_num_chunks
         
@@ -354,9 +361,9 @@ def make_zero_order_train_step_fn(compiled_forward_fn, optimizer_info, FLAGS, mo
         )
         
         if FLAGS.zero_order_verbose:
-            master_print("[ZO] Computing baseline loss over chunks...")
+            master_print("[ZO] Computing gradient estimate using central differences...")
         
-        # Compute main ZO gradient estimate
+        # Compute main ZO gradient estimate using central differences
         grad_estimate, baseline_loss = compute_zero_order_gradient_estimate(
             compiled_forward_fn, train_state.params, chunked_batch, ttt_lr_mult,
             rng_generator, num_chunks, FLAGS.zero_order_num_perturbations, 
@@ -364,7 +371,7 @@ def make_zero_order_train_step_fn(compiled_forward_fn, optimizer_info, FLAGS, mo
         )
         
         if FLAGS.zero_order_verbose:
-            master_print(f"[ZO] Baseline loss: {baseline_loss:.6f}")
+            master_print(f"[ZO] Baseline loss (central diff estimate): {baseline_loss:.6f}")
         
         debug_metrics = {}
         
@@ -420,10 +427,10 @@ def make_zero_order_train_step_fn(compiled_forward_fn, optimizer_info, FLAGS, mo
                 else:
                     master_print("[ZO Debug] Adam gradient computation skipped (function not available or error)")
 
-        # 3. Apply gradients (use main ZO estimate for actual updates).
+        # Apply gradients (use main ZO estimate for actual updates).
         train_state = train_state.apply_gradients(grads=grad_estimate)
         
-        # 4. Compute metrics.
+        # Compute metrics.
         learning_rate = optimizer_info["learning_rate_schedule"](train_state.step)
         grads_norm = global_norm(grad_estimate)
         
@@ -796,8 +803,10 @@ def print_zero_order_config(FLAGS):
         master_print(f"Num Chunks: {FLAGS.zero_order_num_chunks} (effective sequence is longer)")
         master_print(f"Num Perturbations: {FLAGS.zero_order_num_perturbations}")
         master_print(f"Perturbation Scale: {FLAGS.zero_order_perturbation_scale}")
+        master_print(f"Max Grad Norm: {FLAGS.zero_order_max_grad_norm}")
         master_print(f"Verbose Logging: {FLAGS.zero_order_verbose}")
         master_print(f"Debug Cosine Similarity: {FLAGS.zero_order_debug_cosine}")
+        master_print(f"Method: Central Differences (2 evaluations per perturbation)")
         master_print("="*60)
 
 
