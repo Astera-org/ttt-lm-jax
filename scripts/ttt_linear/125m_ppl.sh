@@ -24,21 +24,10 @@ fi
 
 EXP_NAME="${TTT_IMPLEMENTATION}-linear-125m-books-2k"
 
-# PRETRAINED="/home/zacharie/llm-meta-learning/adaptation/ttt/Test-Time-Training_models"
-# cp -r ${PRETRAINED}/${EXP_NAME}  ${EXP_DIR}/${EXP_NAME}
-# RESUME_EXP_NAME="ttt-linear-125m-books-2k"
-
-#RESUME_EXP_NAME="${EXP_NAME}"
-
-
-#debug for previous codebase
-#EXP_DIR="/home/zacharie/llm-meta-learning/adaptation/ttt/Test-Time-Training_models"
-#EXP_NAME="ttt-linear-125m-books-2k"
-
+TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
+EXP_NAME="${EXP_NAME}-${TIMESTAMP}"
 
 LOAD_MODEL_CONFIG='125m-TTT'
-
-
 
 function get_update_model_config {
         local use_cache=$1
@@ -50,8 +39,7 @@ function get_update_model_config {
 # use the function to set the UPDATE_MODEL_CONFIG
 UPDATE_MODEL_CONFIG=$(get_update_model_config "False")
 
-
-export CUDA_VISIBLE_DEVICES=4,5,6,7 #2,3,4,5 # 0,1,2,3,
+export CUDA_VISIBLE_DEVICES=0,1,2,3 #4,5,6,7 #2,3,4,5 # 0,1,2,3,
 export NCCL_DEBUG=INFO
 
 uv run python3 -m ttt.train  \
@@ -77,11 +65,9 @@ uv run python3 -m ttt.train  \
         --optimizer.adamw_optimizer.lr_warmup_steps=480 \
         --optimizer.adamw_optimizer.lr_decay_steps=4800 \
          --zero_order_frequency=30 \
-         --zero_order_perturbation_scale=1e-2 \
-         --zero_order_num_perturbations=512 \
+         --zero_order_perturbation_scale=1e-3 \
+         --zero_order_num_perturbations=64 \
          --use_zero_order_training=True 
-
-
 
 if [ $? -ne 0 ]; then
     echo "Training failed. Exiting script."
@@ -92,8 +78,10 @@ echo "Training complete. Now running perplexity evaluation..."
 
 UPDATE_MODEL_CONFIG=$(get_update_model_config "True")
 
-
 export CUDA_VISIBLE_DEVICES=2
+
+# Run perplexity evaluation and capture output
+PERPLEXITY_OUTPUT_FILE="${EXP_DIR}/${EXP_NAME}/perplexity_results.txt"
 
 uv run python3 test_perplexity.py  \
         --mesh_dim='!1,1,1' \
@@ -102,7 +90,17 @@ uv run python3 test_perplexity.py  \
         --update_model_config="${UPDATE_MODEL_CONFIG}" \
         --exp_dir=${EXP_DIR} \
         --exp_name=${EXP_NAME} \
-        --compute_chunk_size=8192
+        --compute_chunk_size=8192 \
+        --log_to_wandb=True \
+        2>&1 | tee "${PERPLEXITY_OUTPUT_FILE}"
+
+if [ $? -eq 0 ]; then
+    echo "Perplexity evaluation completed successfully."
+    echo "Results saved to: ${PERPLEXITY_OUTPUT_FILE}"
+else
+    echo "Perplexity evaluation failed."
+    exit 1
+fi
 
 
 

@@ -1,5 +1,6 @@
 import mlxu
 import wandb
+import os
 import os.path as osp
 import json
 
@@ -754,7 +755,14 @@ def main(argv):
 
     # Create WandB run and checkpointer
     if master_process:
-        wandb.init(project="TTT-LM", config=flags_config_dict, name=FLAGS.exp_name)
+        wandb_run = wandb.init(project="TTT-LM", config=flags_config_dict, name=FLAGS.exp_name)
+        # Save W&B run ID for perplexity evaluation
+        wandb_run_id = wandb_run.id
+        wandb_id_file = osp.join(FLAGS.exp_dir, FLAGS.exp_name, "wandb_run_id.txt")
+        os.makedirs(osp.dirname(wandb_id_file), exist_ok=True)
+        with open(wandb_id_file, 'w') as f:
+            f.write(wandb_run_id)
+        master_print(f"W&B run ID saved: {wandb_run_id}")
         ckpt_dir = osp.join(FLAGS.exp_dir, FLAGS.exp_name)
         checkpointer = StreamingCheckpointer(FLAGS.checkpointer, ckpt_dir, enable=master_process)
     else:
@@ -924,6 +932,36 @@ def main(argv):
                 save_training_results(results_dict, FLAGS.exp_dir, FLAGS.exp_name)
                 master_print(f"Results saved to {osp.join(FLAGS.exp_dir, FLAGS.exp_name, 'training_results.txt')}")
 
+
+def log_perplexity_to_wandb(exp_dir, exp_name, perplexity_results):
+    """Resume W&B run and log perplexity results."""
+    wandb_id_file = osp.join(exp_dir, exp_name, "wandb_run_id.txt")
+    if not osp.exists(wandb_id_file):
+        master_print("W&B run ID file not found, cannot log perplexity results")
+        return
+    
+    with open(wandb_id_file, 'r') as f:
+        wandb_run_id = f.read().strip()
+    
+    # Resume the existing W&B run
+    wandb.init(project="TTT-LM", id=wandb_run_id, resume="must")
+    
+    # Log perplexity results
+    if isinstance(perplexity_results, dict):
+        # If results contain multiple metrics
+        log_dict = {}
+        for key, value in perplexity_results.items():
+            if key.lower().startswith('ppl') or 'perplexity' in key.lower():
+                log_dict[f"Final_{key}"] = value
+            else:
+                log_dict[f"Final_{key}"] = value
+        wandb.log(log_dict)
+    else:
+        # If results is a single perplexity value
+        wandb.log({"Final_Perplexity": perplexity_results})
+    
+    master_print(f"Perplexity results logged to W&B run: {wandb_run_id}")
+    wandb.finish()
 
 
 if __name__ == "__main__":
