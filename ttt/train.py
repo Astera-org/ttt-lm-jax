@@ -75,9 +75,117 @@ zero_order_num_perturbations=64,
 zero_order_perturbation_scale=1e-3,
 zero_order_frequency=0, # 0=never, 1=always, N=every N steps
 zero_order_verbose=True,
-    zero_order_max_grad_norm=1.0,
+zero_order_max_grad_norm=1.0,
+# Debug options
+zero_order_debug_gradients=False,  # Enable gradient comparison debugging
+zero_order_debug_frequency=10,     # How often to compute debug gradients (every N ZO steps)
 )
 
+
+
+def compute_cosine_similarity(grad1, grad2):
+    """Compute cosine similarity between two gradient pytrees."""
+    # Flatten both gradient trees
+    flat_grad1, _ = jax.flatten_util.ravel_pytree(grad1)
+    flat_grad2, _ = jax.flatten_util.ravel_pytree(grad2)
+    
+    # Compute dot product and norms
+    dot_product = jnp.dot(flat_grad1, flat_grad2)
+    norm1 = jnp.linalg.norm(flat_grad1)
+    norm2 = jnp.linalg.norm(flat_grad2)
+    
+    # Avoid division by zero
+    cosine_sim = dot_product / (norm1 * norm2 + 1e-8)
+    return cosine_sim
+
+
+def make_debug_gradient_functions(model, optimizer_info, model_config, compiled_forward_fn, FLAGS):
+    """Create functions for computing debug gradients (ZO single chunk and standard Adam)."""
+    
+    def compute_zoo_single_chunk_gradient(train_state, rng, batch, ttt_lr_mult):
+        """Compute ZO gradient using only a single chunk."""
+        rng_generator = JaxRNG(rng)
+        
+        # Use only the first portion of the batch (single chunk equivalent)
+        chunk_size = batch["input_tokens"].shape[0] // FLAGS.zero_order_num_chunks
+        single_chunk_batch = tree_map(lambda x: x[:chunk_size], batch)
+        
+        def compute_loss_single_chunk(params):
+            """Compute loss on single chunk."""
+            input_tokens = single_chunk_batch["input_tokens"]
+            target_tokens = single_chunk_batch["target_tokens"]
+            loss_masks = single_chunk_batch["loss_masks"]
+            
+            chunk_rng = rng_generator(["dropout", "params"])
+            loss, _ = compiled_forward_fn(
+                params, input_tokens, target_tokens, loss_masks, ttt_lr_mult, chunk_rng, None
+            )
+            return loss
+        
+        # Compute baseline loss
+        baseline_loss = compute_loss_single_chunk(train_state.params)
+        
+        # Estimate gradient via perturbations (same as main ZO but single chunk)
+        grad_estimate = tree_map(jnp.zeros_like, train_state.params)
+        for pert_idx in range(FLAGS.zero_order_num_perturbations):
+            # Generate perturbation
+            perturbation_rng = rng_generator()
+            perturbation = tree_map(
+                lambda x: jax.random.normal(perturbation_rng, x.shape, dtype=x.dtype) * FLAGS.zero_order_perturbation_scale,
+                train_state.params
+            )
+            
+            # Apply perturbation
+            perturbed_params = tree_map(lambda p, delta: p + delta, train_state.params, perturbation)
+            
+            # Calculate perturbed loss
+            perturbed_loss = compute_loss_single_chunk(perturbed_params)
+            
+            # Calculate finite difference gradient
+            loss_diff = perturbed_loss - baseline_loss
+            perturbation_grad = tree_map(
+                lambda delta: (loss_diff / FLAGS.zero_order_perturbation_scale**2) * delta,
+                perturbation
+            )
+            
+            # Accumulate gradient estimate
+            grad_estimate = tree_map(
+                lambda g, pg: g + pg / FLAGS.zero_order_num_perturbations,
+                grad_estimate, perturbation_grad
+            )
+        
+        return grad_estimate
+    
+    def compute_standard_adam_gradient(train_state, rng, batch, ttt_lr_mult):
+        """Compute standard Adam gradient on a single window (same size as single chunk)."""
+        rng_generator = JaxRNG(rng)
+        
+        # Use only the first portion of the batch (single chunk equivalent)
+        chunk_size = batch["input_tokens"].shape[0] // FLAGS.zero_order_num_chunks
+        single_chunk_batch = tree_map(lambda x: x[:chunk_size], batch)
+        single_chunk_batch = with_sharding_constraint(single_chunk_batch, PS(("dp", "fsdp")))
+        
+        def loss_and_accuracy(params):
+            outputs = model.apply(
+                {'params': params},
+                single_chunk_batch["input_tokens"],
+                ttt_lr_mult=ttt_lr_mult,
+                deterministic=False,
+                output_ttt_stats=False,
+                rngs=rng_generator(model_config.rng_keys()),
+            )
+            logits = outputs.logits
+            loss, _ = cross_entropy_loss_and_accuracy(
+                logits, single_chunk_batch["target_tokens"], single_chunk_batch["loss_masks"]
+            )
+            return loss, None
+        
+        grad_fn = jax.value_and_grad(loss_and_accuracy, has_aux=True)
+        (loss, _), grads = grad_fn(train_state.params)
+        
+        return grads
+    
+    return compute_zoo_single_chunk_gradient, compute_standard_adam_gradient
 
 
 def make_train_step_fn(model, optimizer_info, model_config, accum_steps=1):
@@ -212,9 +320,9 @@ def make_minimal_forward_fn(model, model_config):
 
 
 
-def make_zero_order_train_step_fn(compiled_forward_fn, optimizer_info, FLAGS):
+def make_zero_order_train_step_fn(compiled_forward_fn, optimizer_info, FLAGS, debug_gradient_fns=None):
     """Create a PURE PYTHON zero-order training step that processes the batch in chunks."""
-    def zero_order_train_step(train_state, rng, batch, ttt_lr_mult):
+    def zero_order_train_step(train_state, rng, batch, ttt_lr_mult, step=None):
         """Pure Python zero-order training step that simulates a long sequence."""
         rng_generator = JaxRNG(rng)
         num_chunks = FLAGS.zero_order_num_chunks
@@ -237,7 +345,8 @@ def make_zero_order_train_step_fn(compiled_forward_fn, optimizer_info, FLAGS):
             total_loss = 0.0
             current_cache = None
             for i in range(num_chunks):
-                print(f"[ZO] Processing chunk {i + 1}/{num_chunks}...")
+                if FLAGS.zero_order_verbose:
+                    master_print(f"[ZO] Processing chunk {i + 1}/{num_chunks}...")
                 # Get the data for the current chunk.
                 input_chunk = chunked_batch["input_tokens"][i]
                 target_chunk = chunked_batch["target_tokens"][i]
@@ -298,25 +407,62 @@ def make_zero_order_train_step_fn(compiled_forward_fn, optimizer_info, FLAGS):
             if FLAGS.zero_order_verbose:
                 master_print(f"[ZO] Pert {pert_idx + 1}: loss_diff = {loss_diff:.6f}")
         
-
-
-        max_grad_norm = 1.0  
+        # Apply gradient clipping
+        max_grad_norm = FLAGS.zero_order_max_grad_norm
         grad_estimate = tree_map(
             lambda g: jnp.clip(g, -max_grad_norm, max_grad_norm), 
             grad_estimate
         )
         
+        # 3. Debug gradient computations (if enabled and appropriate step)
+        debug_metrics = {}
+        if (FLAGS.zero_order_debug_gradients and debug_gradient_fns is not None and 
+            step is not None and step % FLAGS.zero_order_debug_frequency == 0):
+            
+            master_print(f"[DEBUG] Computing debug gradients at step {step}...")
+            compute_zoo_single_chunk_gradient, compute_standard_adam_gradient = debug_gradient_fns
+            
+            try:
+                # Compute ZO gradient on single chunk
+                zoo_single_grad = compute_zoo_single_chunk_gradient(train_state, rng, batch, ttt_lr_mult)
+                
+                # Compute standard Adam gradient on single chunk
+                adam_grad = compute_standard_adam_gradient(train_state, rng, batch, ttt_lr_mult)
+                
+                # Compute cosine similarities
+                cos_zoo_zoo_single = compute_cosine_similarity(grad_estimate, zoo_single_grad)
+                cos_zoo_single_adam = compute_cosine_similarity(zoo_single_grad, adam_grad)
+                
+                debug_metrics = {
+                    "ZO_ZO_Single_Cosine": float(cos_zoo_zoo_single),
+                    "ZO_Single_Adam_Cosine": float(cos_zoo_single_adam),
+                    "ZO_Grad_Norm": float(global_norm(grad_estimate)),
+                    "ZO_Single_Grad_Norm": float(global_norm(zoo_single_grad)),
+                    "Adam_Grad_Norm": float(global_norm(adam_grad)),
+                }
+                
+                master_print(f"[DEBUG] ZO vs ZO-Single cosine: {cos_zoo_zoo_single:.4f}")
+                master_print(f"[DEBUG] ZO-Single vs Adam cosine: {cos_zoo_single_adam:.4f}")
+                
+            except Exception as e:
+                master_print(f"[DEBUG] Error computing debug gradients: {e}")
+                debug_metrics = {
+                    "ZO_ZO_Single_Cosine": 0.0,
+                    "ZO_Single_Adam_Cosine": 0.0,
+                    "ZO_Grad_Norm": float(global_norm(grad_estimate)),
+                    "ZO_Single_Grad_Norm": 0.0,
+                    "Adam_Grad_Norm": 0.0,
+                }
 
-
-        # 3. Apply gradients.
+        # 4. Apply gradients (use original ZO gradient for weight updates).
         train_state = train_state.apply_gradients(grads=grad_estimate)
         
-        # 4. Compute metrics.
+        # 5. Compute metrics.
         learning_rate = optimizer_info["learning_rate_schedule"](train_state.step)
         grads_norm = global_norm(grad_estimate)
         
         # TTT stats are not computed in ZO mode.
-        return (train_state, baseline_loss, None, grads_norm, learning_rate, rng_generator())
+        return (train_state, baseline_loss, None, grads_norm, learning_rate, rng_generator(), debug_metrics)
     
     return zero_order_train_step
 
@@ -374,6 +520,7 @@ def make_sharded_functions(model, optimizer, optimizer_info, model_config):
     # Create minimal forward function for zero-order (this will be compiled)
     minimal_forward_fn = None
     zero_order_train_step = None
+    debug_gradient_fns = None
     if FLAGS.use_zero_order_training:
         master_print("[COMPILE] Creating minimal forward function for zero-order training...")
         minimal_forward_fn = make_minimal_forward_fn(model, model_config)
@@ -419,23 +566,53 @@ def make_sharded_functions(model, optimizer, optimizer_info, model_config):
             out_shardings=(PS(), PS()),
         )
         master_print("[COMPILE] Minimal forward function compiled!")
+        
+        # Create debug gradient functions if debugging is enabled
+        if FLAGS.zero_order_debug_gradients:
+            master_print("[COMPILE] Creating debug gradient functions...")
+            debug_gradient_fns = make_debug_gradient_functions(
+                model, optimizer_info, model_config, sharded_minimal_forward_fn, FLAGS
+            )
+            
+            # Compile the debug functions
+            compute_zoo_single_chunk_gradient, compute_standard_adam_gradient = debug_gradient_fns
+            
+            sharded_zoo_single_chunk_gradient = pjit(
+                compute_zoo_single_chunk_gradient,
+                in_shardings=(train_state_partition, PS(), PS(), PS()),
+                out_shardings=train_state_partition.params,
+            )
+            
+            sharded_standard_adam_gradient = pjit(
+                compute_standard_adam_gradient,
+                in_shardings=(train_state_partition, PS(), PS(), PS()),
+                out_shardings=train_state_partition.params,
+            )
+            
+            debug_gradient_fns = (sharded_zoo_single_chunk_gradient, sharded_standard_adam_gradient)
+            master_print("[COMPILE] Debug gradient functions compiled!")
+        
         # Create the pure Python ZO step, passing it the *compiled* forward function.
         master_print("[COMPILE] Creating zero-order training step (pure Python, no compilation)...")
-        zero_order_train_step = make_zero_order_train_step_fn(sharded_minimal_forward_fn, optimizer_info, FLAGS)
+        zero_order_train_step = make_zero_order_train_step_fn(
+            sharded_minimal_forward_fn, optimizer_info, FLAGS, debug_gradient_fns
+        )
         master_print("[COMPILE] Zero-order training step created!")
     else:
         master_print("[COMPILE] Zero-order training disabled, skipping forward function compilation")
 
 
     # Pure Python runtime selector (NO compilation)
-    def runtime_train_step_selector(train_state, rng, batch, ttt_lr_mult, output_ttt_stats=False, use_zero_order=False):
+    def runtime_train_step_selector(train_state, rng, batch, ttt_lr_mult, output_ttt_stats=False, use_zero_order=False, step=None):
         """Pure Python runtime selector - no compilation overhead."""
         if use_zero_order and zero_order_train_step is not None:
             # Call pure Python zero-order function directly.
-            return zero_order_train_step(train_state, rng, batch, ttt_lr_mult)
+            return zero_order_train_step(train_state, rng, batch, ttt_lr_mult, step)
         else:
             # Call compiled gradient training.
-            return sharded_gradient_train_step(train_state, rng, batch, ttt_lr_mult, output_ttt_stats)
+            result = sharded_gradient_train_step(train_state, rng, batch, ttt_lr_mult, output_ttt_stats)
+            # Add empty debug metrics for consistency
+            return result + ({},)
 
 
     return (
@@ -669,7 +846,13 @@ def print_zero_order_config(FLAGS):
         master_print(f"Num Chunks: {FLAGS.zero_order_num_chunks} (effective sequence is longer)")
         master_print(f"Num Perturbations: {FLAGS.zero_order_num_perturbations}")
         master_print(f"Perturbation Scale: {FLAGS.zero_order_perturbation_scale}")
+        master_print(f"Max Grad Norm: {FLAGS.zero_order_max_grad_norm}")
         master_print(f"Verbose Logging: {FLAGS.zero_order_verbose}")
+        master_print("-" * 60)
+        master_print("GRADIENT DEBUG CONFIGURATION")
+        master_print("-" * 60)
+        master_print(f"Debug Gradients: {FLAGS.zero_order_debug_gradients}")
+        master_print(f"Debug Frequency: {FLAGS.zero_order_debug_frequency} (every N ZO steps)")
         master_print("="*60)
 
 
@@ -882,9 +1065,16 @@ def main(argv):
             )
 
 
-            train_state, loss, ttt_stats, grads_norm, learning_rate, sharded_rng = runtime_train_step_selector(
-                train_state, sharded_rng, batch, ttt_lr_mult, output_ttt_stats, use_zero_order
+            result = runtime_train_step_selector(
+                train_state, sharded_rng, batch, ttt_lr_mult, output_ttt_stats, use_zero_order, step
             )
+            
+            # Handle different return lengths (gradient vs zero-order with debug)
+            if len(result) == 7:  # Zero-order with debug metrics
+                train_state, loss, ttt_stats, grads_norm, learning_rate, sharded_rng, debug_metrics = result
+            else:  # Standard gradient or zero-order without debug
+                train_state, loss, ttt_stats, grads_norm, learning_rate, sharded_rng = result[:6]
+                debug_metrics = {}
 
 
             # Store results
@@ -899,15 +1089,19 @@ def main(argv):
                 # Convert training method to numeric for WandB compatibility
                 training_method_numeric = 1 if use_zero_order else 0
                 
-                wandb.log(
-                    {
-                        "Train Loss": loss.item(),
-                        "Gradient Norm": grads_norm.item(),
-                        "Learning Rate": learning_rate.item(),
-                        "Training Method (0=grad, 1=ZO)": training_method_numeric,
-                    },
-                    step=step,
-                )
+                # Base logging dictionary
+                log_dict = {
+                    "Train Loss": loss.item(),
+                    "Gradient Norm": grads_norm.item(),
+                    "Learning Rate": learning_rate.item(),
+                    "Training Method (0=grad, 1=ZO)": training_method_numeric,
+                }
+                
+                # Add debug metrics if available
+                if debug_metrics:
+                    log_dict.update(debug_metrics)
+                
+                wandb.log(log_dict, step=step)
 
 
                 if output_ttt_stats and ttt_stats is not None:

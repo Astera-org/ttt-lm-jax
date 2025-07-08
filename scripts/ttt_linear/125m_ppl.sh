@@ -39,7 +39,7 @@ function get_update_model_config {
 # use the function to set the UPDATE_MODEL_CONFIG
 UPDATE_MODEL_CONFIG=$(get_update_model_config "False")
 
-export CUDA_VISIBLE_DEVICES=0,1,2,3 #4,5,6,7 #2,3,4,5 # 0,1,2,3,
+export CUDA_VISIBLE_DEVICES=1,2 #4,5,6,7 #2,3,4,5 # 0,1,2,3,
 export NCCL_DEBUG=INFO
 
 uv run python3 -m ttt.train  \
