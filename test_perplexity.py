@@ -23,6 +23,7 @@ import mlxu
 from flax.core import freeze
 from typing import List, Tuple, Dict, Optional, Any
 import traceback
+import wandb
 
 from ttt.models.model import ModelConfig, CausalLM, CONFIGS
 from ttt.infra.checkpoint import StreamingCheckpointer
@@ -55,6 +56,10 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     ppl_seq_size=2048,
     skip_start_chars=1024,
     debug_mode=False,
+    # W&B integration flags
+    use_wandb=True,
+    wandb_project="TTT-LM",
+    log_to_wandb=True,
 )
 
 class TTTNormCalculator:
@@ -508,21 +513,32 @@ class ResultsVisualizer:
     @staticmethod
     def plot_results(book_results: List[Dict[str, Any]], exp_name: str, 
                     exp_dir: str, ppl_seq_size: int, compute_chunk_size: int, 
-                    tokens_per_book: int) -> None:
+                    tokens_per_book: int, wandb_run: Optional[Any] = None) -> None:
         """Create and save perplexity and TTT norm plots."""
         print("[VIZ] Creating visualizations...")
         
         # Plot perplexity
-        ResultsVisualizer._plot_perplexity(
+        ppl_fig = ResultsVisualizer._plot_perplexity(
             book_results, exp_name, exp_dir, ppl_seq_size, 
             compute_chunk_size, tokens_per_book
         )
         
         # Plot TTT norms
-        ResultsVisualizer._plot_ttt_norms(
+        norm_fig = ResultsVisualizer._plot_ttt_norms(
             book_results, exp_name, exp_dir, ppl_seq_size, 
             compute_chunk_size, tokens_per_book
         )
+        
+        # Log plots to W&B
+        if wandb_run is not None:
+            try:
+                if ppl_fig is not None:
+                    wandb_run.log({"perplexity_evaluation/perplexity_plot": wandb.Image(ppl_fig)})
+                if norm_fig is not None:
+                    wandb_run.log({"perplexity_evaluation/ttt_norm_plot": wandb.Image(norm_fig)})
+                print("[VIZ] Plots logged to W&B")
+            except Exception as e:
+                print(f"[VIZ] Error logging plots to W&B: {e}")
         
         # Print statistics
         ResultsVisualizer._print_statistics(book_results)
@@ -530,9 +546,9 @@ class ResultsVisualizer:
     @staticmethod
     def _plot_perplexity(book_results: List[Dict[str, Any]], exp_name: str, 
                         exp_dir: str, ppl_seq_size: int, compute_chunk_size: int, 
-                        tokens_per_book: int) -> None:
+                        tokens_per_book: int) -> Optional[plt.Figure]:
         """Plot perplexity progression."""
-        plt.figure(figsize=(14, 8))
+        fig = plt.figure(figsize=(14, 8))
         
         all_perplexities = []
         position_data = {}
@@ -592,14 +608,15 @@ class ResultsVisualizer:
         filepath = os.path.join(exp_dir, exp_name, filename)
         plt.savefig(filepath, dpi=300, bbox_inches='tight')
         print(f"[VIZ] Saved perplexity plot: {filepath}")
-        plt.close()
+        
+        return fig  # Return figure for W&B logging
     
     @staticmethod
     def _plot_ttt_norms(book_results: List[Dict[str, Any]], exp_name: str, 
                        exp_dir: str, ppl_seq_size: int, compute_chunk_size: int, 
-                       tokens_per_book: int) -> None:
+                       tokens_per_book: int) -> Optional[plt.Figure]:
         """Plot TTT norm progression."""
-        plt.figure(figsize=(14, 8))
+        fig = plt.figure(figsize=(14, 8))
         
         norm_position_data = {}
         valid_norms_found = False
@@ -668,8 +685,9 @@ class ResultsVisualizer:
         filepath = os.path.join(exp_dir, exp_name, filename)
         plt.savefig(filepath, dpi=300, bbox_inches='tight')
         print(f"[VIZ] Saved TTT norm plot: {filepath}")
-        plt.close()
-    
+        
+        return fig  # Return figure for W&B logging
+
     @staticmethod
     def _print_statistics(book_results: List[Dict[str, Any]]) -> None:
         """Print summary statistics."""
@@ -1080,6 +1098,163 @@ def debug_ttt_functionality(mesh: Any, model: Any, model_config: Any,
             print(f"[DEBUG] ERROR in debug test: {e}")
             traceback.print_exc()
 
+def load_wandb_run_id(exp_dir: str, exp_name: str) -> Optional[str]:
+    """Load W&B run ID from the training run."""
+    wandb_id_file = os.path.join(exp_dir, exp_name, "wandb_run_id.txt")
+    if os.path.exists(wandb_id_file):
+        with open(wandb_id_file, 'r') as f:
+            wandb_run_id = f.read().strip()
+        print(f"[WANDB] Found existing W&B run ID: {wandb_run_id}")
+        return wandb_run_id
+    else:
+        print(f"[WANDB] No W&B run ID file found at: {wandb_id_file}")
+        return None
+
+def initialize_wandb(flags: Any) -> Optional[Any]:
+    """Initialize W&B logging by resuming existing run or creating new one."""
+    if not flags.use_wandb or not flags.log_to_wandb:
+        print("[WANDB] W&B logging disabled")
+        return None
+    
+    try:
+        # Try to resume existing run from training
+        wandb_run_id = load_wandb_run_id(flags.exp_dir, flags.exp_name)
+        
+        if wandb_run_id:
+            # Resume existing run
+            print("[WANDB] Resuming existing W&B run...")
+            wandb_run = wandb.init(
+                project=flags.wandb_project,
+                id=wandb_run_id,
+                resume="allow",  # Allow resuming, but create new if doesn't exist
+                name=f"{flags.exp_name}_perplexity",
+                tags=["perplexity_evaluation"]
+            )
+            print(f"[WANDB] Successfully resumed W&B run: {wandb_run_id}")
+        else:
+            # Create new run for perplexity evaluation
+            print("[WANDB] Creating new W&B run for perplexity evaluation...")
+            wandb_run = wandb.init(
+                project=flags.wandb_project,
+                name=f"{flags.exp_name}_perplexity",
+                tags=["perplexity_evaluation"],
+                config={
+                    "exp_name": flags.exp_name,
+                    "compute_chunk_size": flags.compute_chunk_size,
+                    "books_dir": flags.books_dir,
+                    "num_books": flags.num_books,
+                    "tokens_per_book": flags.tokens_per_book,
+                    "ppl_seq_size": flags.ppl_seq_size,
+                    "debug_mode": flags.debug_mode,
+                }
+            )
+            print(f"[WANDB] Created new W&B run: {wandb_run.id}")
+        
+        return wandb_run
+        
+    except Exception as e:
+        print(f"[WANDB] Failed to initialize W&B: {e}")
+        return None
+
+def log_perplexity_results_to_wandb(wandb_run: Any, book_results: List[Dict[str, Any]], 
+                                   flags: Any) -> None:
+    """Log perplexity evaluation results to W&B."""
+    if wandb_run is None:
+        return
+    
+    try:
+        print("[WANDB] Logging perplexity results...")
+        
+        # Calculate overall statistics
+        all_perplexities = []
+        all_norms = []
+        total_sequences = 0
+        total_tokens = 0
+        total_time = 0
+        
+        for result in book_results:
+            all_perplexities.extend(result['seq_perplexities'])
+            all_norms.extend([n for n in result['seq_ttt_norms'] if n is not None])
+            total_sequences += len(result['seq_ending_positions'])
+            total_tokens += result['total_tokens']
+            total_time += result['calc_time']
+        
+        # Overall metrics
+        log_dict = {
+            "perplexity_evaluation/books_processed": len(book_results),
+            "perplexity_evaluation/total_sequences": total_sequences,
+            "perplexity_evaluation/total_tokens": total_tokens,
+            "perplexity_evaluation/total_time_seconds": total_time,
+            "perplexity_evaluation/avg_time_per_sequence": total_time / max(1, total_sequences),
+        }
+        
+        # Perplexity statistics
+        if all_perplexities:
+            log_dict.update({
+                "perplexity_evaluation/perplexity_median": np.median(all_perplexities),
+                "perplexity_evaluation/perplexity_mean": np.mean(all_perplexities),
+                "perplexity_evaluation/perplexity_std": np.std(all_perplexities),
+                "perplexity_evaluation/perplexity_min": np.min(all_perplexities),
+                "perplexity_evaluation/perplexity_max": np.max(all_perplexities),
+            })
+        
+        # TTT norm statistics
+        if all_norms:
+            log_dict.update({
+                "perplexity_evaluation/ttt_norm_median": np.median(all_norms),
+                "perplexity_evaluation/ttt_norm_mean": np.mean(all_norms),
+                "perplexity_evaluation/ttt_norm_std": np.std(all_norms),
+                "perplexity_evaluation/ttt_norm_min": np.min(all_norms),
+                "perplexity_evaluation/ttt_norm_max": np.max(all_norms),
+                "perplexity_evaluation/valid_ttt_norms": len(all_norms),
+            })
+        else:
+            log_dict["perplexity_evaluation/valid_ttt_norms"] = 0
+        
+        # Configuration info
+        log_dict.update({
+            "perplexity_evaluation/chunk_size": flags.compute_chunk_size,
+            "perplexity_evaluation/ppl_seq_size": flags.ppl_seq_size,
+            "perplexity_evaluation/tokens_per_book": flags.tokens_per_book,
+        })
+        
+        # Log all metrics
+        wandb_run.log(log_dict)
+        
+        # Log per-book metrics as a table
+        book_data = []
+        for result in book_results:
+            perplexities = result['seq_perplexities']
+            norms = [n for n in result['seq_ttt_norms'] if n is not None]
+            
+            book_row = {
+                "book_id": result['book_id'],
+                "sequences": len(result['seq_ending_positions']),
+                "tokens": result['total_tokens'],
+                "calc_time": result['calc_time'],
+                "ppl_median": np.median(perplexities) if perplexities else None,
+                "ppl_std": np.std(perplexities) if perplexities else None,
+                "norm_median": np.median(norms) if norms else None,
+                "norm_std": np.std(norms) if norms else None,
+                "valid_norms": len(norms),
+            }
+            book_data.append(book_row)
+        
+        # Create W&B table
+        table = wandb.Table(
+            columns=["book_id", "sequences", "tokens", "calc_time", 
+                    "ppl_median", "ppl_std", "norm_median", "norm_std", "valid_norms"],
+            data=[[row[col] for col in ["book_id", "sequences", "tokens", "calc_time", 
+                                      "ppl_median", "ppl_std", "norm_median", "norm_std", "valid_norms"]] 
+                  for row in book_data]
+        )
+        wandb_run.log({"perplexity_evaluation/book_results": table})
+        
+        print(f"[WANDB] Successfully logged perplexity results to W&B")
+        
+    except Exception as e:
+        print(f"[WANDB] Error logging to W&B: {e}")
+
 def main(argv):
     """Main evaluation function."""
     start_time = time.time()
@@ -1089,6 +1264,9 @@ def main(argv):
     
     # Get flags
     variant = mlxu.get_user_flags(FLAGS, FLAGS_DEF)
+    
+    # Initialize W&B
+    wandb_run = initialize_wandb(FLAGS)
     
     # Setup
     mesh, model, model_config, tokenizer = setup_model_and_mesh(FLAGS)
@@ -1107,6 +1285,8 @@ def main(argv):
     
     if not books:
         print("[MAIN] ERROR: No valid books loaded. Exiting.")
+        if wandb_run:
+            wandb_run.finish()
         return
     
     # Initialize calculator
@@ -1138,9 +1318,14 @@ def main(argv):
     
     # Visualize results
     if book_results:
+        # Log to W&B before plotting
+        if wandb_run:
+            log_perplexity_results_to_wandb(wandb_run, book_results, FLAGS)
+        
         ResultsVisualizer.plot_results(
             book_results, FLAGS.exp_name, FLAGS.exp_dir,
-            FLAGS.ppl_seq_size, FLAGS.compute_chunk_size, FLAGS.tokens_per_book
+            FLAGS.ppl_seq_size, FLAGS.compute_chunk_size, FLAGS.tokens_per_book,
+            wandb_run
         )
         
         # Save results to text file
@@ -1156,6 +1341,11 @@ def main(argv):
     
     total_time = time.time() - start_time
     print(f"\n[MAIN] Evaluation completed in {total_time:.2f} seconds")
+    
+    # Finish W&B run
+    if wandb_run:
+        wandb_run.finish()
+        print("[WANDB] W&B run finished")
 
 if __name__ == "__main__":
     mlxu.run(main)
