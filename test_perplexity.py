@@ -1121,15 +1121,33 @@ def initialize_wandb(flags: Any) -> Optional[Any]:
         wandb_run_id = load_wandb_run_id(flags.exp_dir, flags.exp_name)
         
         if wandb_run_id:
-            # Resume existing run
+            # Resume existing run with minimal settings to avoid overriding
             print("[WANDB] Resuming existing W&B run...")
             wandb_run = wandb.init(
                 project=flags.wandb_project,
                 id=wandb_run_id,
-                resume="allow",  # Allow resuming, but create new if doesn't exist
-                name=f"{flags.exp_name}_perplexity",
-                tags=["perplexity_evaluation"]
+                resume="allow",
+                # Don't set name or tags to avoid overriding
+                settings=wandb.Settings(
+                    resume="allow",   # Don't override config when resuming
+                    save_code=False,  # Don't save code to avoid command override
+                    program_relpath=None,  # Don't set program path
+                    program=None,  # Don't set program name
+                    _disable_stats=True,  # Disable system stats collection
+                    _disable_meta=True,   # Disable metadata collection
+                )
             )
+            
+            # Log perplexity configuration as separate metrics instead of config
+            wandb_run.log({
+                "perplexity_config/compute_chunk_size": flags.compute_chunk_size,
+                "perplexity_config/num_books": flags.num_books,
+                "perplexity_config/tokens_per_book": flags.tokens_per_book,
+                "perplexity_config/ppl_seq_size": flags.ppl_seq_size,
+                "perplexity_config/debug_mode": flags.debug_mode,
+                "perplexity_config/evaluation_started": True,
+            })
+            
             print(f"[WANDB] Successfully resumed W&B run: {wandb_run_id}")
         else:
             # Create new run for perplexity evaluation
