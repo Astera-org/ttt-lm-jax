@@ -76,6 +76,7 @@ zero_order_perturbation_scale=1e-3,
 zero_order_frequency=0, # 0=never, 1=always, N=every N steps
 zero_order_verbose=True,
 zero_order_max_grad_norm=1.0,
+zero_order_start_step=1,  # Step at which to begin zero-order training (default: start immediately)
 # Debug options
 zero_order_debug_cosine=False,  # Enable cosine similarity debugging
 )
@@ -440,17 +441,23 @@ def make_zero_order_train_step_fn(compiled_forward_fn, optimizer_info, FLAGS, mo
     return zero_order_train_step
 
 
-
 def should_use_zero_order(step: int, FLAGS) -> bool:
-    """Determine whether to use zero-order training."""
+    """Determine whether to use zero-order training with delay support."""
     if not FLAGS.use_zero_order_training:
         return False
     if FLAGS.zero_order_frequency <= 0:
         return False
+    
+    # NEW: Check if we've reached the start step for zero-order training
+    if step < FLAGS.zero_order_start_step:
+        return False
+    
     if FLAGS.zero_order_frequency == 1:
         return True
-    return (step % FLAGS.zero_order_frequency) == 0
-
+    
+    # Calculate steps since ZO started (adjust frequency calculation)
+    steps_since_zo_start = step - FLAGS.zero_order_start_step + 1
+    return (steps_since_zo_start % FLAGS.zero_order_frequency) == 0
 
 
 def make_eval_step_fn(model, model_config):
@@ -793,13 +800,14 @@ def print_model_parameter_info(params, model_config):
 
 
 def print_zero_order_config(FLAGS):
-    """Print zero-order training configuration."""
+    """Print zero-order training configuration with delay information."""
     if FLAGS.use_zero_order_training:
         master_print("="*60)
         master_print("ZERO-ORDER TRAINING CONFIGURATION")
         master_print("="*60)
         master_print(f"Enabled: {FLAGS.use_zero_order_training}")
-        master_print(f"Frequency: {FLAGS.zero_order_frequency} (0=never, 1=always, N=every N steps)")
+        master_print(f"Start Step: {FLAGS.zero_order_start_step} (ZOO begins at this step)")
+        master_print(f"Frequency: {FLAGS.zero_order_frequency} (0=never, 1=always, N=every N steps after start)")
         master_print(f"Num Chunks: {FLAGS.zero_order_num_chunks} (effective sequence is longer)")
         master_print(f"Num Perturbations: {FLAGS.zero_order_num_perturbations}")
         master_print(f"Perturbation Scale: {FLAGS.zero_order_perturbation_scale}")
@@ -807,6 +815,21 @@ def print_zero_order_config(FLAGS):
         master_print(f"Verbose Logging: {FLAGS.zero_order_verbose}")
         master_print(f"Debug Cosine Similarity: {FLAGS.zero_order_debug_cosine}")
         master_print(f"Method: Central Differences (2 evaluations per perturbation)")
+        
+        # Calculate and show when ZOO will be used
+        if FLAGS.zero_order_start_step > 1:
+            master_print(f"Note: Regular gradient training will be used for steps 1-{FLAGS.zero_order_start_step - 1}")
+        
+        if FLAGS.zero_order_frequency > 1:
+            zo_steps = []
+            for step in range(FLAGS.zero_order_start_step, min(FLAGS.zero_order_start_step + FLAGS.zero_order_frequency * 3, FLAGS.total_steps + 1)):
+                if should_use_zero_order(step, FLAGS):
+                    zo_steps.append(step)
+            if zo_steps:
+                master_print(f"ZOO will be used at steps: {zo_steps[:5]}{'...' if len(zo_steps) > 5 else ''}")
+        elif FLAGS.zero_order_frequency == 1:
+            master_print(f"ZOO will be used at every step starting from step {FLAGS.zero_order_start_step}")
+        
         master_print("="*60)
 
 
@@ -1007,9 +1030,13 @@ def main(argv):
 
 
             ttt_lr_mult = get_ttt_lr_mult(step)
-            # Determine training method
+            # Determine training method with delay support
             use_zero_order = should_use_zero_order(step, FLAGS)
             method = "zero-order" if use_zero_order else "gradient"
+            
+            # Log when ZOO starts for the first time
+            if use_zero_order and step == FLAGS.zero_order_start_step and master_process:
+                master_print(f"[ZOO] Starting zero-order optimization at step {step}")
             
             output_ttt_stats = (
                 FLAGS.save_milestone_freq > 0
@@ -1041,6 +1068,7 @@ def main(argv):
                     "Gradient Norm": grads_norm.item(),
                     "Learning Rate": learning_rate.item(),
                     "Training Method (0=grad, 1=ZO)": training_method_numeric,
+                    "ZOO Enabled": use_zero_order,  # Boolean flag for easier filtering
                 }
                 
                 # Add debug metrics if available
