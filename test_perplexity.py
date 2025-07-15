@@ -532,10 +532,15 @@ class ResultsVisualizer:
         # Log plots to W&B
         if wandb_run is not None:
             try:
+                # Log as images
                 if ppl_fig is not None:
                     wandb_run.log({"perplexity_evaluation/perplexity_plot": wandb.Image(ppl_fig)})
                 if norm_fig is not None:
                     wandb_run.log({"perplexity_evaluation/ttt_norm_plot": wandb.Image(norm_fig)})
+                
+                # Log as interactive plots
+                ResultsVisualizer._log_interactive_plots_to_wandb(wandb_run, book_results)
+                
                 print("[VIZ] Plots logged to W&B")
             except Exception as e:
                 print(f"[VIZ] Error logging plots to W&B: {e}")
@@ -543,6 +548,197 @@ class ResultsVisualizer:
         # Print statistics
         ResultsVisualizer._print_statistics(book_results)
     
+    @staticmethod
+    def _log_interactive_plots_to_wandb(wandb_run: Any, book_results: List[Dict[str, Any]]) -> None:
+        """Log interactive plots directly to W&B."""
+        try:
+            print("[VIZ] Creating interactive W&B plots...")
+            
+            # Prepare data for plotting
+            all_data = []
+            position_data = {}
+            norm_position_data = {}
+            
+            for result in book_results:
+                book_id = result['book_id']
+                positions = result['seq_ending_positions']
+                perplexities = result['seq_perplexities']
+                norms = result['seq_ttt_norms']
+                
+                # Collect data for individual book lines
+                for pos, ppl, norm in zip(positions, perplexities, norms):
+                    all_data.append({
+                        'book_id': book_id,
+                        'position': pos,
+                        'perplexity': ppl,
+                        'ttt_norm': norm if norm is not None else None
+                    })
+                    
+                    # Collect for median calculation
+                    if pos not in position_data:
+                        position_data[pos] = []
+                    position_data[pos].append(ppl)
+                    
+                    if norm is not None:
+                        if pos not in norm_position_data:
+                            norm_position_data[pos] = []
+                        norm_position_data[pos].append(norm)
+            
+            # Create perplexity plot data
+            perplexity_data = []
+            
+            # Add individual book data
+            for data_point in all_data:
+                perplexity_data.append([
+                    data_point['position'],
+                    data_point['perplexity'],
+                    data_point['book_id'],
+                    'individual'
+                ])
+            
+            # Add median line data
+            sorted_positions = sorted(position_data.keys())
+            for pos in sorted_positions:
+                median_ppl = np.median(position_data[pos])
+                perplexity_data.append([
+                    pos,
+                    median_ppl,
+                    'median',
+                    'median'
+                ])
+            
+            # Log perplexity plot
+            perplexity_table = wandb.Table(
+                data=perplexity_data,
+                columns=['position', 'perplexity', 'book_id', 'type']
+            )
+            
+            wandb_run.log({
+                "perplexity_evaluation/interactive_perplexity": wandb.plot.line(
+                    perplexity_table,
+                    x='position',
+                    y='perplexity',
+                    color='book_id',
+                    title='Perplexity Progression (Interactive)'
+                )
+            })
+            
+            # Create TTT norm plot data if available
+            if norm_position_data:
+                norm_data = []
+                
+                # Add individual book norm data
+                for data_point in all_data:
+                    if data_point['ttt_norm'] is not None:
+                        norm_data.append([
+                            data_point['position'],
+                            data_point['ttt_norm'],
+                            data_point['book_id'],
+                            'individual'
+                        ])
+                
+                # Add median norm line data
+                sorted_norm_positions = sorted(norm_position_data.keys())
+                for pos in sorted_norm_positions:
+                    median_norm = np.median(norm_position_data[pos])
+                    norm_data.append([
+                        pos,
+                        median_norm,
+                        'median',
+                        'median'
+                    ])
+                
+                # Log TTT norm plot
+                norm_table = wandb.Table(
+                    data=norm_data,
+                    columns=['position', 'ttt_norm', 'book_id', 'type']
+                )
+                
+                wandb_run.log({
+                    "perplexity_evaluation/interactive_ttt_norm": wandb.plot.line(
+                        norm_table,
+                        x='position',
+                        y='ttt_norm',
+                        color='book_id',
+                        title='TTT Weight Norm Progression (Interactive)'
+                    )
+                })
+            
+            # Create scatter plot for perplexity vs position
+            scatter_data = []
+            for data_point in all_data:
+                scatter_data.append([
+                    data_point['position'],
+                    data_point['perplexity'],
+                    data_point['book_id']
+                ])
+            
+            scatter_table = wandb.Table(
+                data=scatter_data,
+                columns=['position', 'perplexity', 'book_id']
+            )
+            
+            wandb_run.log({
+                "perplexity_evaluation/perplexity_scatter": wandb.plot.scatter(
+                    scatter_table,
+                    x='position',
+                    y='perplexity',
+                    title='Perplexity vs Position (Scatter)'
+                )
+            })
+            
+            # Create histogram of perplexity values
+            hist_data = [[data_point['perplexity']] for data_point in all_data]
+            hist_table = wandb.Table(
+                data=hist_data,
+                columns=['perplexity']
+            )
+            
+            wandb_run.log({
+                "perplexity_evaluation/perplexity_histogram": wandb.plot.histogram(
+                    hist_table,
+                    value='perplexity',
+                    title='Perplexity Distribution'
+                )
+            })
+            
+            # Create summary statistics table
+            summary_data = []
+            for result in book_results:
+                perplexities = result['seq_perplexities']
+                norms = [n for n in result['seq_ttt_norms'] if n is not None]
+                
+                summary_data.append([
+                    result['book_id'],
+                    len(result['seq_ending_positions']),
+                    result['total_tokens'],
+                    result['calc_time'],
+                    np.median(perplexities) if perplexities else None,
+                    np.mean(perplexities) if perplexities else None,
+                    np.std(perplexities) if perplexities else None,
+                    np.median(norms) if norms else None,
+                    np.mean(norms) if norms else None,
+                    len(norms)
+                ])
+            
+            summary_table = wandb.Table(
+                data=summary_data,
+                columns=['book_id', 'sequences', 'tokens', 'calc_time', 
+                        'ppl_median', 'ppl_mean', 'ppl_std', 
+                        'norm_median', 'norm_mean', 'valid_norms']
+            )
+            
+            wandb_run.log({
+                "perplexity_evaluation/book_summary_table": summary_table
+            })
+            
+            print("[VIZ] Interactive plots logged to W&B successfully")
+            
+        except Exception as e:
+            print(f"[VIZ] Error creating interactive W&B plots: {e}")
+            import traceback
+            traceback.print_exc()
+
     @staticmethod
     def _plot_perplexity(book_results: List[Dict[str, Any]], exp_name: str, 
                         exp_dir: str, ppl_seq_size: int, compute_chunk_size: int, 

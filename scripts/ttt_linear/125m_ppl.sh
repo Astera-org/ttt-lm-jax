@@ -28,7 +28,7 @@ local use_cache=$1
 
 
 UPDATE_MODEL_CONFIG=$(get_update_model_config "False")
-export CUDA_VISIBLE_DEVICES=1,2,3,4 #4,5,6,7 #2,3,4,5 # 0,1,2,3,
+export CUDA_VISIBLE_DEVICES=0,1,2,3 #0,1,2,3 #4,5,6,7 #2,3,4,5 # 0,1,2,3,
 export NCCL_DEBUG=INFO
 
 
@@ -36,7 +36,7 @@ export NCCL_DEBUG=INFO
 uv run python3 -m ttt.train \
 --mesh_dim='!1,-1,1' \
 --dtype='bfloat16' \
---total_steps=5400 \
+--total_steps=6800 \
 --save_checkpoint_freq=1000 \
 --save_milestone_freq=2000 \
 --load_model_config=${LOAD_MODEL_CONFIG} \
@@ -56,8 +56,8 @@ uv run python3 -m ttt.train \
 --optimizer.adamw_optimizer.lr_warmup_steps=480 \
 --optimizer.adamw_optimizer.lr_decay_steps=6800 \
 --zero_order_perturbation_scale=1e-3 \
+--use_zero_order_training=False \
 --zero_order_num_perturbations=64 \
---use_zero_order_training=True \
 --zero_order_start_step=4800 \
 --zero_order_frequency=1 \
 --zero_order_debug_cosine=False
@@ -82,6 +82,7 @@ uv run python3 test_perplexity.py \
 --update_model_config="${UPDATE_MODEL_CONFIG}" \
 --exp_dir=${EXP_DIR} \
 --exp_name=${EXP_NAME} \
+--ppl_seq_size=${SEQ_LEN} \
 --compute_chunk_size=8192 \
  2>&1 | tee "${PERPLEXITY_OUTPUT_FILE}"
 if [ $? -eq 0 ]; then
