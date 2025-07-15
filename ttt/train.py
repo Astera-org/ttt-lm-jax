@@ -671,6 +671,7 @@ def initialize_or_resume(
                 ),
             )
         )
+        print(f"Loading checkpoint from: {ckpt_resume_dir}")
         train_state, restored_params = checkpointer.load_trainstate_checkpoint(
             ckpt_resume_dir, train_state_shapes, shard_fns
         )
@@ -924,6 +925,7 @@ def main(argv):
             f.write(wandb_run_id)
         master_print(f"W&B run ID saved: {wandb_run_id}")
         ckpt_dir = osp.join(FLAGS.exp_dir, FLAGS.exp_name)
+        print(f"Checkpoint directory: {ckpt_dir}")
         checkpointer = StreamingCheckpointer(FLAGS.checkpointer, ckpt_dir, enable=master_process)
     else:
         checkpointer = StreamingCheckpointer(FLAGS.checkpointer, None, enable=False)

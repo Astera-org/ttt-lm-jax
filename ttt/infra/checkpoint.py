@@ -147,12 +147,14 @@ class StreamingCheckpointer(object):
         cls, load_from, trainstate_target=None, trainstate_shard_fns=None, disallow_trainstate=False
     ):
         if trainstate_target is not None:
-            params_target = trainstate_target.params["params"]
+            # print all keys avalable in params
+            print("Available keys in trainstate_target.params:", trainstate_target.params.keys())
+            params_target = trainstate_target.params#["params"]
         else:
             params_target = None
 
         if trainstate_shard_fns is not None:
-            params_shard_fns = trainstate_shard_fns.params["params"]
+            params_shard_fns = trainstate_shard_fns.params#["params"]
         else:
             params_shard_fns = None
 
@@ -162,6 +164,7 @@ class StreamingCheckpointer(object):
 
         train_state = None
         restored_params = None
+
 
         if load_type == "trainstate":
             # Load the entire train state in the streaming format
