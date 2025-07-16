@@ -32,17 +32,17 @@ local use_cache=$1
 
 
 UPDATE_MODEL_CONFIG=$(get_update_model_config "False")
-export CUDA_VISIBLE_DEVICES=0,1 #,2,3 #4,5,6,7 #2,3,4,5 # 0,1,2,3,
+export CUDA_VISIBLE_DEVICES=5,6 #,2,3 #4,5,6,7 #2,3,4,5 # 0,1,2,3,
 #export NCCL_DEBUG=INFO
 
 
-RESUME_EXP_NAME="custom.ttt_layer_nobias_frobenius-linear-125m-books-2k-20250715-054449"
+RESUME_EXP_NAME="custom.ttt_layer_nobias_frobenius-linear-125m-books-2k-20250715-220914"
 #EXP_NAME=$RESUME_EXP_NAME
 
 uv run python3 -m ttt.train \
 --mesh_dim='!1,-1,1' \
 --dtype='bfloat16' \
---total_steps=6400 \
+--total_steps=5800 \
 --save_checkpoint_freq=1000 \
 --save_milestone_freq=2000 \
 --load_model_config=${LOAD_MODEL_CONFIG} \
@@ -59,10 +59,10 @@ uv run python3 -m ttt.train \
 --optimizer.adamw_optimizer.lr=3e-3 \
 --optimizer.adamw_optimizer.end_lr=1e-5 \
 --optimizer.adamw_optimizer.lr_warmup_steps=480 \
---optimizer.adamw_optimizer.lr_decay_steps=6800 \
+--optimizer.adamw_optimizer.lr_decay_steps=4800 \
 --zero_order_perturbation_scale=1e-3 \
 --use_zero_order_training=True \
---zero_order_num_perturbations=64 \
+--zero_order_num_perturbations=96 \
 --zero_order_start_step=4800 \
 --zero_order_frequency=1 \
 --zero_order_debug_cosine=False \

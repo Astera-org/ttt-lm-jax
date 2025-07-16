@@ -623,6 +623,27 @@ class ResultsVisualizer:
                 )
             })
             
+            # Create separate median-only perplexity plot
+            median_ppl_data = []
+            for pos in sorted_positions:
+                median_ppl = np.median(position_data[pos])
+                median_ppl_data.append([pos, median_ppl])
+            
+            if median_ppl_data:
+                median_ppl_table = wandb.Table(
+                    data=median_ppl_data,
+                    columns=['position', 'median_perplexity']
+                )
+                
+                wandb_run.log({
+                    "perplexity_evaluation/median_perplexity": wandb.plot.line(
+                        median_ppl_table,
+                        x='position',
+                        y='median_perplexity',
+                        title='Median Perplexity Progression'
+                    )
+                })
+            
             # Create TTT norm plot data if available
             if norm_position_data:
                 norm_data = []
@@ -663,6 +684,68 @@ class ResultsVisualizer:
                         title='TTT Weight Norm Progression (Interactive)'
                     )
                 })
+                
+                # Create separate median-only TTT norm plot
+                median_norm_data = []
+                for pos in sorted_norm_positions:
+                    median_norm = np.median(norm_position_data[pos])
+                    median_norm_data.append([pos, median_norm])
+                
+                if median_norm_data:
+                    median_norm_table = wandb.Table(
+                        data=median_norm_data,
+                        columns=['position', 'median_ttt_norm']
+                    )
+                    
+                    wandb_run.log({
+                        "perplexity_evaluation/median_ttt_norm": wandb.plot.line(
+                            median_norm_table,
+                            x='position',
+                            y='median_ttt_norm',
+                            title='Median TTT Weight Norm Progression'
+                        )
+                    })
+                
+                # Also log TTT norm as a scatter plot for better visualization
+                ttt_scatter_data = []
+                for data_point in all_data:
+                    if data_point['ttt_norm'] is not None:
+                        ttt_scatter_data.append([
+                            data_point['position'],
+                            data_point['ttt_norm'],
+                            data_point['book_id']
+                        ])
+                
+                if ttt_scatter_data:
+                    ttt_scatter_table = wandb.Table(
+                        data=ttt_scatter_data,
+                        columns=['position', 'ttt_norm', 'book_id']
+                    )
+                    
+                    wandb_run.log({
+                        "perplexity_evaluation/ttt_norm_scatter": wandb.plot.scatter(
+                            ttt_scatter_table,
+                            x='position',
+                            y='ttt_norm',
+                            title='TTT Weight Norm vs Position (Scatter)'
+                        )
+                    })
+                
+                # Create histogram of TTT norm values
+                ttt_hist_data = [[data_point['ttt_norm']] for data_point in all_data if data_point['ttt_norm'] is not None]
+                if ttt_hist_data:
+                    ttt_hist_table = wandb.Table(
+                        data=ttt_hist_data,
+                        columns=['ttt_norm']
+                    )
+                    
+                    wandb_run.log({
+                        "perplexity_evaluation/ttt_norm_histogram": wandb.plot.histogram(
+                            ttt_hist_table,
+                            value='ttt_norm',
+                            title='TTT Weight Norm Distribution'
+                        )
+                    })
             
             # Create scatter plot for perplexity vs position
             scatter_data = []
@@ -700,36 +783,6 @@ class ResultsVisualizer:
                     value='perplexity',
                     title='Perplexity Distribution'
                 )
-            })
-            
-            # Create summary statistics table
-            summary_data = []
-            for result in book_results:
-                perplexities = result['seq_perplexities']
-                norms = [n for n in result['seq_ttt_norms'] if n is not None]
-                
-                summary_data.append([
-                    result['book_id'],
-                    len(result['seq_ending_positions']),
-                    result['total_tokens'],
-                    result['calc_time'],
-                    np.median(perplexities) if perplexities else None,
-                    np.mean(perplexities) if perplexities else None,
-                    np.std(perplexities) if perplexities else None,
-                    np.median(norms) if norms else None,
-                    np.mean(norms) if norms else None,
-                    len(norms)
-                ])
-            
-            summary_table = wandb.Table(
-                data=summary_data,
-                columns=['book_id', 'sequences', 'tokens', 'calc_time', 
-                        'ppl_median', 'ppl_mean', 'ppl_std', 
-                        'norm_median', 'norm_mean', 'valid_norms']
-            )
-            
-            wandb_run.log({
-                "perplexity_evaluation/book_summary_table": summary_table
             })
             
             print("[VIZ] Interactive plots logged to W&B successfully")
