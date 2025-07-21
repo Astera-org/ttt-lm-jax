@@ -49,10 +49,10 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     exp_dir="",
     exp_name="",
     jax_distributed=JaxDistributedConfig.get_default_config(),
-    compute_chunk_size=8192,
+    compute_chunk_size=16384,
     books_dir="./data/gutenberg/",
     num_books=30,
-    tokens_per_book=8192,
+    tokens_per_book=16384*2,
     ppl_seq_size=2048,
     skip_start_chars=1024,
     debug_mode=False,
@@ -529,9 +529,10 @@ class ResultsVisualizer:
             compute_chunk_size, tokens_per_book
         )
         
-        # Log plots to W&B
+        # Log plots to W&B only if wandb_run is provided
         if wandb_run is not None:
             try:
+                print("[VIZ] Logging plots to W&B...")
                 # Log as images
                 if ppl_fig is not None:
                     wandb_run.log({"perplexity_evaluation/perplexity_plot": wandb.Image(ppl_fig)})
@@ -544,6 +545,8 @@ class ResultsVisualizer:
                 print("[VIZ] Plots logged to W&B")
             except Exception as e:
                 print(f"[VIZ] Error logging plots to W&B: {e}")
+        else:
+            print("[VIZ] W&B logging disabled, skipping W&B plot uploads")
         
         # Print statistics
         ResultsVisualizer._print_statistics(book_results)
@@ -551,6 +554,11 @@ class ResultsVisualizer:
     @staticmethod
     def _log_interactive_plots_to_wandb(wandb_run: Any, book_results: List[Dict[str, Any]]) -> None:
         """Log interactive plots directly to W&B."""
+        # Check if W&B logging is disabled
+        if wandb_run is None:
+            print("[VIZ] W&B run is None, skipping interactive plots")
+            return
+            
         try:
             print("[VIZ] Creating interactive W&B plots...")
             
@@ -853,7 +861,7 @@ class ResultsVisualizer:
         plt.tight_layout()
         
         # Save
-        filename = f'perplexity_progression_{exp_name}.png'
+        filename = f'perplexity_progression_{exp_name}_{ppl_seq_size}seqsize_{compute_chunk_size}compsize_{tokens_per_book}tokens.png'
         filepath = os.path.join(exp_dir, exp_name, filename)
         plt.savefig(filepath, dpi=300, bbox_inches='tight')
         print(f"[VIZ] Saved perplexity plot: {filepath}")
@@ -930,7 +938,7 @@ class ResultsVisualizer:
         plt.tight_layout()
         
         # Save
-        filename = f'ttt_norm_progression_{exp_name}.png'
+        filename = f'ttt_norm_progression_{exp_name}_{ppl_seq_size}seqsize_{compute_chunk_size}compsize_{tokens_per_book}tokens.png'
         filepath = os.path.join(exp_dir, exp_name, filename)
         plt.savefig(filepath, dpi=300, bbox_inches='tight')
         print(f"[VIZ] Saved TTT norm plot: {filepath}")
@@ -1000,7 +1008,7 @@ class ResultsVisualizer:
         # Generate filename with timestamp
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f'ttt_perplexity_results_{exp_name}_{timestamp}.txt'
+        filename = f'ttt_perplexity_results_{exp_name}_{ppl_seq_size}seqsize_{compute_chunk_size}compsize_{tokens_per_book}tokens_{timestamp}.txt'
         filepath = os.path.join(output_dir, filename)
         
         with open(filepath, 'w', encoding='utf-8') as f:
