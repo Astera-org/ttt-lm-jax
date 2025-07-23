@@ -70,7 +70,7 @@ jax_distributed=JaxDistributedConfig.get_default_config(),
 is_rollback_reshuffle=False,
 # Zero-order training options
 use_zero_order_training=False,
-zero_order_num_chunks=2, # number of chunks to simulate a longer sequence
+zero_order_num_chunks=1, # number of chunks to simulate a longer sequence
 zero_order_num_perturbations=64,
 zero_order_perturbation_scale=1e-3,
 zero_order_frequency=0, # 0=never, 1=always, N=every N steps
