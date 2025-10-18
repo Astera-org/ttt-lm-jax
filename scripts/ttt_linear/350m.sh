@@ -1,31 +1,40 @@
 #!/bin/bash
 
-DATA_PATH=TODO
-DATA_NAME="the_pile" # "books3" 
+# Set HuggingFace token (set this in your environment before running)
+# export HF_TOKEN="your_token_here"
 
-# Product should equal 0.5 million
+# Use HuggingFace dataset if no local path provided
+DATA_PATH=""
+DATA_NAME="SaylorTwift/the_pile_books3_minus_gutenberg"
 SEQ_LEN=2048
-BS=256
+BS=128
 
-# Experiment details
-EXP_NAME=TODO
-EXP_DIR=TODO
+GRAD_ACCUM=2 # 256/256 = 1
 
-sudo mkdir -p /${EXP_DIR}/${EXP_NAME} && sudo chmod -R 777 ${EXP_DIR}/${EXP_NAME};
-cd ../..
 
-python3 -m ttt.train \
+EXP_DIR=./current_exp
+mkdir -p ${EXP_DIR}
+
+export TTT_IMPLEMENTATION="custom.ttt_layer_nobias_frobenius"
+
+EXP_NAME="ttt_layer_nobias_frobenius-linear-350m-books-2k"
+
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+
+
+uv run python3 -m ttt.train \
         --mesh_dim='!-1,1,1' \
-        --dtype='fp32' \
+        --dtype='bfloat16' \
         --total_steps=13500 \
-        --save_checkpoint_freq=1000 \
-        --save_milestone_freq=2000 \
+        --save_checkpoint_freq=100 \
+        --save_milestone_freq=100 \
         --load_model_config='350m-TTT' \
-        --update_model_config="dict(seq_modeling_block='ttt_linear', ttt_base_lr=1.0)" \
+        --update_model_config="dict(ttt_implementation=\"${TTT_IMPLEMENTATION}\",seq_modeling_block='ttt_linear', ttt_base_lr=1.0)" \
         --dataset_path=${DATA_PATH} \
         --dataset_name=${DATA_NAME} \
         --seq_length=${SEQ_LEN} \
         --global_batch_size=${BS} \
+        --accum_steps=${GRAD_ACCUM} \
         --optimizer.type='adamw' \
         --optimizer.adamw_optimizer.weight_decay=0.1 \
         --optimizer.adamw_optimizer.lr=1.5e-3 \

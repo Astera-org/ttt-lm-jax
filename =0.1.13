@@ -1,0 +1,96 @@
+Defaulting to user installation because normal site-packages is not writeable
+Collecting mlxu
+  Downloading mlxu-0.2.0.tar.gz (7.8 kB)
+  Preparing metadata (setup.py): started
+  Preparing metadata (setup.py): finished with status 'done'
+Collecting absl-py
+  Downloading absl_py-2.3.1-py3-none-any.whl (135 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 135.8/135.8 KB 6.4 MB/s eta 0:00:00
+Collecting cloudpickle
+  Downloading cloudpickle-3.1.1-py3-none-any.whl (20 kB)
+Collecting gcsfs
+  Downloading gcsfs-2025.9.0-py2.py3-none-any.whl (36 kB)
+Collecting ml-collections
+  Downloading ml_collections-1.1.0-py3-none-any.whl (76 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 76.7/76.7 KB 56.6 MB/s eta 0:00:00
+Requirement already satisfied: numpy in /data/users/zacharie/.local/lib/python3.10/site-packages (from mlxu) (2.2.6)
+Collecting wandb
+  Downloading wandb-0.22.2-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (19.9 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 19.9/19.9 MB 99.2 MB/s eta 0:00:00
+Collecting google-cloud-storage
+  Downloading google_cloud_storage-3.4.1-py3-none-any.whl (290 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 290.1/290.1 KB 135.6 MB/s eta 0:00:00
+Collecting google-auth-oauthlib
+  Downloading google_auth_oauthlib-1.2.2-py3-none-any.whl (19 kB)
+Requirement already satisfied: decorator>4.1.2 in /data/users/zacharie/.local/lib/python3.10/site-packages (from gcsfs->mlxu) (5.2.1)
+Requirement already satisfied: fsspec==2025.9.0 in /data/users/zacharie/.local/lib/python3.10/site-packages (from gcsfs->mlxu) (2025.9.0)
+Requirement already satisfied: aiohttp!=4.0.0a0,!=4.0.0a1 in /data/users/zacharie/.local/lib/python3.10/site-packages (from gcsfs->mlxu) (3.13.0)
+Requirement already satisfied: google-auth>=1.2 in /usr/lib/python3/dist-packages (from gcsfs->mlxu) (1.5.1)
+Requirement already satisfied: requests in /data/users/zacharie/.local/lib/python3.10/site-packages (from gcsfs->mlxu) (2.32.5)
+Requirement already satisfied: PyYAML in /usr/lib/python3/dist-packages (from ml-collections->mlxu) (5.4.1)
+Collecting gitpython!=3.1.29,>=1.0.0
+  Downloading gitpython-3.1.45-py3-none-any.whl (208 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 208.2/208.2 KB 129.1 MB/s eta 0:00:00
+Requirement already satisfied: typing-extensions<5,>=4.8 in /data/users/zacharie/.local/lib/python3.10/site-packages (from wandb->mlxu) (4.15.0)
+Requirement already satisfied: protobuf!=4.21.0,!=5.28.0,<7,>=3.19.0 in /data/users/zacharie/.local/lib/python3.10/site-packages (from wandb->mlxu) (6.32.1)
+Requirement already satisfied: click>=8.0.1 in /usr/lib/python3/dist-packages (from wandb->mlxu) (8.0.3)
+Collecting sentry-sdk>=2.0.0
+  Downloading sentry_sdk-2.42.0-py2.py3-none-any.whl (379 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 379.5/379.5 KB 160.8 MB/s eta 0:00:00
+Requirement already satisfied: pydantic<3 in /data/users/zacharie/.local/lib/python3.10/site-packages (from wandb->mlxu) (2.12.2)
+Requirement already satisfied: packaging in /usr/lib/python3/dist-packages (from wandb->mlxu) (21.3)
+Requirement already satisfied: platformdirs in /data/users/zacharie/.local/lib/python3.10/site-packages (from wandb->mlxu) (4.5.0)
+Requirement already satisfied: async-timeout<6.0,>=4.0 in /data/users/zacharie/.local/lib/python3.10/site-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->gcsfs->mlxu) (5.0.1)
+Requirement already satisfied: aiohappyeyeballs>=2.5.0 in /data/users/zacharie/.local/lib/python3.10/site-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->gcsfs->mlxu) (2.6.1)
+Requirement already satisfied: multidict<7.0,>=4.5 in /data/users/zacharie/.local/lib/python3.10/site-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->gcsfs->mlxu) (6.7.0)
+Requirement already satisfied: attrs>=17.3.0 in /usr/lib/python3/dist-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->gcsfs->mlxu) (21.2.0)
+Requirement already satisfied: yarl<2.0,>=1.17.0 in /data/users/zacharie/.local/lib/python3.10/site-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->gcsfs->mlxu) (1.22.0)
+Requirement already satisfied: aiosignal>=1.4.0 in /data/users/zacharie/.local/lib/python3.10/site-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->gcsfs->mlxu) (1.4.0)
+Requirement already satisfied: propcache>=0.2.0 in /data/users/zacharie/.local/lib/python3.10/site-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->gcsfs->mlxu) (0.4.1)
+Requirement already satisfied: frozenlist>=1.1.1 in /data/users/zacharie/.local/lib/python3.10/site-packages (from aiohttp!=4.0.0a0,!=4.0.0a1->gcsfs->mlxu) (1.8.0)
+Collecting gitdb<5,>=4.0.1
+  Downloading gitdb-4.0.12-py3-none-any.whl (62 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 62.8/62.8 KB 57.7 MB/s eta 0:00:00
+Requirement already satisfied: typing-inspection>=0.4.2 in /data/users/zacharie/.local/lib/python3.10/site-packages (from pydantic<3->wandb->mlxu) (0.4.2)
+Requirement already satisfied: annotated-types>=0.6.0 in /data/users/zacharie/.local/lib/python3.10/site-packages (from pydantic<3->wandb->mlxu) (0.7.0)
+Requirement already satisfied: pydantic-core==2.41.4 in /data/users/zacharie/.local/lib/python3.10/site-packages (from pydantic<3->wandb->mlxu) (2.41.4)
+Requirement already satisfied: certifi>=2017.4.17 in /usr/lib/python3/dist-packages (from requests->gcsfs->mlxu) (2020.6.20)
+Requirement already satisfied: urllib3<3,>=1.21.1 in /usr/lib/python3/dist-packages (from requests->gcsfs->mlxu) (1.26.5)
+Requirement already satisfied: idna<4,>=2.5 in /usr/lib/python3/dist-packages (from requests->gcsfs->mlxu) (3.3)
+Requirement already satisfied: charset_normalizer<4,>=2 in /data/users/zacharie/.local/lib/python3.10/site-packages (from requests->gcsfs->mlxu) (3.4.4)
+Collecting urllib3<3,>=1.21.1
+  Downloading urllib3-2.5.0-py3-none-any.whl (129 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 129.8/129.8 KB 99.4 MB/s eta 0:00:00
+Requirement already satisfied: requests-oauthlib>=0.7.0 in /usr/lib/python3/dist-packages (from google-auth-oauthlib->gcsfs->mlxu) (1.3.0)
+Collecting google-auth>=1.2
+  Downloading google_auth-2.41.1-py2.py3-none-any.whl (221 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 221.3/221.3 KB 125.7 MB/s eta 0:00:00
+Requirement already satisfied: cachetools<7.0,>=2.0.0 in /usr/lib/python3/dist-packages (from google-auth>=1.2->gcsfs->mlxu) (5.0.0)
+Requirement already satisfied: rsa<5,>=3.1.4 in /usr/lib/python3/dist-packages (from google-auth>=1.2->gcsfs->mlxu) (4.8)
+Requirement already satisfied: pyasn1-modules>=0.2.1 in /usr/lib/python3/dist-packages (from google-auth>=1.2->gcsfs->mlxu) (0.2.1)
+Collecting google-api-core<3.0.0,>=2.15.0
+  Downloading google_api_core-2.26.0-py3-none-any.whl (162 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 162.5/162.5 KB 113.4 MB/s eta 0:00:00
+Collecting google-crc32c<2.0.0,>=1.1.3
+  Downloading google_crc32c-1.7.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (38 kB)
+Collecting google-resumable-media<3.0.0,>=2.7.2
+  Downloading google_resumable_media-2.7.2-py2.py3-none-any.whl (81 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 81.3/81.3 KB 71.1 MB/s eta 0:00:00
+Collecting google-cloud-core<3.0.0,>=2.4.2
+  Downloading google_cloud_core-2.4.3-py2.py3-none-any.whl (29 kB)
+Collecting smmap<6,>=3.0.1
+  Downloading smmap-5.0.2-py3-none-any.whl (24 kB)
+Collecting googleapis-common-protos<2.0.0,>=1.56.2
+  Downloading googleapis_common_protos-1.70.0-py3-none-any.whl (294 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 294.5/294.5 KB 137.9 MB/s eta 0:00:00
+Collecting proto-plus<2.0.0,>=1.22.3
+  Downloading proto_plus-1.26.1-py3-none-any.whl (50 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 50.2/50.2 KB 45.1 MB/s eta 0:00:00
+Building wheels for collected packages: mlxu
+  Building wheel for mlxu (setup.py): started
+  Building wheel for mlxu (setup.py): finished with status 'done'
+  Created wheel for mlxu: filename=mlxu-0.2.0-py3-none-any.whl size=6866 sha256=cc4d4f4f6deac2a0cccd64fec0e4697c343cba5f3c475af8acb7389d134900c9
+  Stored in directory: /data/users/zacharie/.cache/pip/wheels/02/cd/da/d4c5bdb2a4066fff60aa979fc9b0bfb272687389ad140435b8
+Successfully built mlxu
+Installing collected packages: urllib3, smmap, proto-plus, googleapis-common-protos, google-crc32c, google-auth, cloudpickle, absl-py, sentry-sdk, ml-collections, google-resumable-media, google-auth-oauthlib, gitdb, google-api-core, gitpython, wandb, google-cloud-core, google-cloud-storage, gcsfs, mlxu
+Successfully installed absl-py-2.3.1 cloudpickle-3.1.1 gcsfs-2025.9.0 gitdb-4.0.12 gitpython-3.1.45 google-api-core-2.26.0 google-auth-2.41.1 google-auth-oauthlib-1.2.2 google-cloud-core-2.4.3 google-cloud-storage-3.4.1 google-crc32c-1.7.1 google-resumable-media-2.7.2 googleapis-common-protos-1.70.0 ml-collections-1.1.0 mlxu-0.2.0 proto-plus-1.26.1 sentry-sdk-2.42.0 smmap-5.0.2 urllib3-2.5.0 wandb-0.22.2

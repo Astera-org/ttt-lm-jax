@@ -33,7 +33,7 @@ def get_ttt_layer_module(ttt_implementation):
         ttt_implementation: Name of the module to import (e.g., "ttt_layer", "ttt_layer_v2", "my_custom_ttt")
     
     Returns:
-        Tuple of (TTTLinear, TTTMLP, TTTLinearBase, TTTMLPBase) classes
+        Tuple of (TTTLinear, TTTLinearBase) classes
     """
 
 
@@ -43,11 +43,9 @@ def get_ttt_layer_module(ttt_implementation):
     
     # Extract the required classes
     TTTLinear = getattr(ttt_module, 'TTTLinear')
-    TTTMLP = getattr(ttt_module, 'TTTMLP')
     TTTLinearBase = getattr(ttt_module, 'TTTLinearBase')
-    TTTMLPBase = getattr(ttt_module, 'TTTMLPBase')
     
-    return TTTLinear, TTTMLP, TTTLinearBase, TTTMLPBase
+    return TTTLinear, TTTLinearBase
     
 
 
@@ -780,7 +778,7 @@ class Block(nn.Module):
     precision: Optional[Union[jax.lax.Precision, str]] = None
 
     def setup(self) -> None:
-        TTTLinear, TTTMLP, TTTLinearBase, TTTMLPBase = get_ttt_layer_module(self.config.ttt_implementation)
+        TTTLinear, TTTLinearBase = get_ttt_layer_module(self.config.ttt_implementation)
 
         if self.config.seq_modeling_block == "self_attention":
             seq_modeling_block = Attention
@@ -788,14 +786,12 @@ class Block(nn.Module):
         elif self.config.seq_modeling_block == "ttt_linear":
             seq_modeling_block = TTTLinear
 
-        elif self.config.seq_modeling_block == "ttt_mlp":
-            seq_modeling_block = TTTMLP
+
 
         elif self.config.seq_modeling_block == "ttt_linear_base":
             seq_modeling_block = TTTLinearBase
 
-        elif self.config.seq_modeling_block == "ttt_mlp_base":
-            seq_modeling_block = TTTMLPBase
+
 
         else:
             raise NotImplementedError("Sequence Modeling Layer %s Not Implemented." % (self.config.seq_modeling_block))

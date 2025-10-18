@@ -60,6 +60,9 @@ def get_multi_head_params(self, params, param_dtype, kernel_init="normal", std=0
                 initializer = nn.initializers.zeros
             elif kernel_init == "ones":
                 initializer = nn.initializers.ones
+            elif kernel_init == "layer_norm":
+                # For layer norm, kernel should be initialized to ones
+                initializer = nn.initializers.ones
             else:
                 raise NotImplementedError("Initializer %s Not Implemented." % (kernel_init))
             p = self.param(k, initializer, new_shape, param_dtype)
@@ -168,7 +171,6 @@ class TTTBase(nn.Module):
 
         # Initialize caches - TTT cache for parameters and conv cache for convolutional states
         if self.config.use_cache:
-            print("Initializing TTT and conv caches.")
             self.ttt_cache = self.variable('ttt_cache', 'weights', lambda: ())
             self.conv_cache = self.variable('conv_cache', 'states', lambda: ())
 
@@ -287,6 +289,9 @@ class TTTBase(nn.Module):
                 cache_dict['conv_q_state'] = jnp.zeros_like(cache_dict['conv_q_state'])
             if 'conv_k_state' in cache_dict:
                 cache_dict['conv_k_state'] = jnp.zeros_like(cache_dict['conv_k_state'])
+            
+            # Update the mutable variable to persist changes
+            self.conv_cache.value = cache_dict
 
     def __call__(
         self,
@@ -308,8 +313,7 @@ class TTTBase(nn.Module):
 
         # check if has attribute `ttt_cache` and if it is mutable
         if self.is_mutable_collection('ttt_cache') and hasattr(self, 'ttt_cache') and  self.ttt_cache.value == ():
-            print("Initializing TTT parameter cache.")
-            
+            # Initialize TTT parameter cache
             batched_ttt_params = tree_map(lambda p: p[None].repeat(B, axis=0) if isinstance(p, jnp.ndarray) else p, self.ttt_params)
             self.ttt_cache.value = batched_ttt_params
 
@@ -328,8 +332,7 @@ class TTTBase(nn.Module):
         _ttt_loss_mse_init, _ttt_loss_mse_step_0, _ttt_loss_mse_step_1, ttt_params_final = ttt_stats
 
         # Update TTT cache with the final parameters from the scan
-        if self.is_mutable_collection('ttt_cache') and hasattr(self, 'ttt_cache') :
-            print("Updating TTT parameter cache with final parameters.", len(ttt_params_final))
+        if self.is_mutable_collection('ttt_cache') and hasattr(self, 'ttt_cache'):
             self.ttt_cache.value = ttt_params_final
         
         return ttt_output, (
@@ -508,7 +511,9 @@ class TTTBase(nn.Module):
             outputs = parallelize_over_heads(XQ, XK, XV, eta,  self.ttt_params if  ttt_params is None else ttt_params , self.ttt_norm_params)
             return outputs
 
-        outputs = update_embed(XQ, XK, XV, eta, ttt_params=self.ttt_cache.value if hasattr(self, 'ttt_cache') else None)
+        # Check if ttt_cache is available and mutable
+        use_ttt_cache = self.is_mutable_collection('ttt_cache') and hasattr(self, 'ttt_cache')
+        outputs = update_embed(XQ, XK, XV, eta, ttt_params=self.ttt_cache.value if use_ttt_cache else None)
         Z, ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1, ttt_params_final = outputs
 
         Z = Z.transpose(0, 2, 1, 3).reshape(B, N, -1)
@@ -548,8 +553,14 @@ class TTTLinearBase(TTTBase):
             square_eta_mini_batch = eta_mini_batch[: self.mini_batch_size]
             last_eta_in_mini_batch = eta_mini_batch[-1][:, None]
 
+            # Apply Frobenius normalization to the current weights before forward pass
+            if self.use_frobenius_norm:
+                W1_init_normalized = frobenius_normalize(W1_init, self.frobenius_eps)
+            else:
+                W1_init_normalized = W1_init
+
             X1 = XK_mini_batch
-            Z1 = X1 @ W1_init
+            Z1 = X1 @ W1_init_normalized
             ttt_norm_out, ttt_norm_vjp = jax.vjp(lambda z: self.ttt_norm.apply({"params": ttt_norm_params}, z), Z1)
             ssl_target = XV_mini_batch - XK_mini_batch
             grad_l_wrt_ttt_norm_out = ttt_norm_out - ssl_target
@@ -561,26 +572,31 @@ class TTTLinearBase(TTTBase):
             else:
                 ttt_loss_mse_step_0 = None
 
-            # Calculate TTT loss using W_init of the entire sequence
+            # Calculate TTT loss using W_init of the entire sequence (use normalized version if enabled)
             if self.config.output_ttt_stats:
                 W1_0, = ttt_params_init
-                Z1_0 = X1 @ W1_0
+                if self.use_frobenius_norm:
+                    W1_0_normalized = frobenius_normalize(W1_0, self.frobenius_eps)
+                else:
+                    W1_0_normalized = W1_0
+                Z1_0 = X1 @ W1_0_normalized
                 ttt_norm_out_0 = self.ttt_norm.apply({"params": ttt_norm_params}, Z1_0)
                 ttt_loss_mse_init = ((ttt_norm_out_0 - ssl_target)[-1] ** 2).mean()
             else:
                 ttt_loss_mse_init = None
 
-            # Original adaptive behavior
+            # Original adaptive behavior with normalized weights
             X1_bar = XQ_mini_batch
             Attn1 = jnp.tril(X1_bar @ X1.transpose(1, 0))
-            Z1_bar = X1_bar @ W1_init - (square_eta_mini_batch * Attn1) @ grad_l_wrt_Z1
+            Z1_bar = X1_bar @ W1_init_normalized - (square_eta_mini_batch * Attn1) @ grad_l_wrt_Z1
             ttt_norm_out_bar = self.ttt_norm.apply({"params": ttt_norm_params}, Z1_bar)
 
             output_mini_batch = X1_bar + ttt_norm_out_bar
 
-            W1_bar_last = W1_init - (last_eta_in_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1
-
-            # Apply Frobenius normalization to the updated weight
+            # Apply gradient update with normalized weights
+            W1_bar_last = W1_init_normalized - (last_eta_in_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1
+            
+            # Re-normalize after gradient update to stay on the manifold
             if self.use_frobenius_norm:
                 W1_bar_last = frobenius_normalize(W1_bar_last, self.frobenius_eps)
 
@@ -681,192 +697,6 @@ class TTTLinear(TTTLinearBase):
         XK = self._apply_causal_conv_with_cache(xqk, self.conv_k, 'conv_k_state', batch_size)
         
         return XQ, XK, XV
-
-    def apply_gate(self, hidden_states, ttt_output):
-        y = self.wg(hidden_states)
-        y = nn.gelu(y)
-        output = y * ttt_output
-        return output
-
-
-class TTTMLPBase(TTTBase):
-    def setup(self):
-        super().setup()
-        self.W1 = self.param(
-            "ttt_dense_0",
-            nn.initializers.normal(self.config.initializer_range),
-            (self.num_heads, self.head_dim, 4 * self.head_dim),
-            self.param_dtype,
-        )
-        self.W2 = self.param(
-            "ttt_dense_1",
-            nn.initializers.normal(self.config.initializer_range),
-            (self.num_heads, 4 * self.head_dim, self.head_dim),
-            self.param_dtype,
-        )
-        self.ttt_params = (self.W1, self.W2)
-
-    def process_mini_batch(
-        self,
-        XQ_mini_batch,
-        XK_mini_batch,
-        XV_mini_batch,
-        eta_mini_batch,
-        ttt_params_init,
-        ttt_params_mini_batch_init,
-        ttt_norm_params
-    ):
-        W1_init, W2_init = ttt_params_mini_batch_init
-        square_eta_mini_batch = eta_mini_batch[: self.mini_batch_size]
-        last_eta_in_mini_batch = eta_mini_batch[-1][:, None]
-
-        X1 = XK_mini_batch
-        Z1 = X1 @ W1_init
-        X2 = nn.gelu(Z1)
-        Z2 = X2 @ W2_init
-        ttt_norm_out, ttt_norm_vjp = jax.vjp(lambda z: self.ttt_norm.apply({"params": ttt_norm_params}, z), Z2)
-
-        ssl_target = XV_mini_batch - X1
-        grad_l_wrt_ttt_norm_out = ttt_norm_out - ssl_target
-        grad_l_wrt_Z2 = ttt_norm_vjp(grad_l_wrt_ttt_norm_out)[0]
-        grad_l_wrt_Z1 = grad_l_wrt_Z2 @ W2_init.transpose(1, 0) * diff_gelu(Z1)
-
-        if self.config.output_ttt_stats:
-            ttt_loss_mse_step_0 = (grad_l_wrt_ttt_norm_out[-1] ** 2).mean()
-        else:
-            ttt_loss_mse_step_0 = None
-
-        # Calculate ttt loss using W_init of the entire sequence
-        if self.config.output_ttt_stats:
-            W1_0, W2_0 = ttt_params_init
-            Z1_0 = X1 @ W1_0
-            X2_0 = nn.gelu(Z1_0)
-            Z2_0 = X2_0 @ W2_0
-            ttt_norm_out_0 = self.ttt_norm.apply({"params": ttt_norm_params}, Z2_0)
-            ttt_loss_mse_init = ((ttt_norm_out_0 - ssl_target)[-1] ** 2).mean()
-        else:
-            ttt_loss_mse_init = None
-
-        # Original adaptive behavior
-        X1_bar = XQ_mini_batch
-        Attn1 = jnp.tril(X1_bar @ X1.transpose(1, 0))
-        Z1_bar = X1_bar @ W1_init - (square_eta_mini_batch * Attn1) @ grad_l_wrt_Z1
-
-        X2_bar = nn.gelu(Z1_bar)
-        Attn2 = jnp.tril(X2_bar @ X2.transpose(1, 0))
-        Z2_bar = X2_bar @ W2_init - (square_eta_mini_batch * Attn2) @ grad_l_wrt_Z2
-        ttt_norm_out_bar = self.ttt_norm.apply({"params": ttt_norm_params}, Z2_bar)
-
-        output_mini_batch = X1_bar + ttt_norm_out_bar
-
-        W1_bar_last = W1_init - (last_eta_in_mini_batch * X1).transpose(1, 0) @ grad_l_wrt_Z1
-        W2_bar_last = W2_init - (last_eta_in_mini_batch * X2).transpose(1, 0) @ grad_l_wrt_Z2
-
-        # Apply Frobenius normalization to the updated weights
-        if self.use_frobenius_norm:
-            W1_bar_last = frobenius_normalize(W1_bar_last, self.frobenius_eps)
-            W2_bar_last = frobenius_normalize(W2_bar_last, self.frobenius_eps)
-
-        if self.config.output_ttt_stats:
-            X1_last_fwd_new = nn.gelu(X1[-1:] @ W1_bar_last) @ W2_bar_last
-            X1_last_fwd_new = self.ttt_norm.apply({"params": ttt_norm_params}, X1_last_fwd_new)
-            ttt_loss_mse_step_1 = ((X1_last_fwd_new - ssl_target[-1:]) ** 2).mean()
-        else:
-            ttt_loss_mse_step_1 = None
-
-        ttt_params_mini_batch_new = (W1_bar_last, W2_bar_last)
-
-        return (
-            ttt_params_mini_batch_new,
-            (output_mini_batch, ttt_loss_mse_init, ttt_loss_mse_step_0, ttt_loss_mse_step_1),
-        )
-
-
-class TTTMLP(TTTMLPBase):
-    def setup(self):
-        super().setup()
-        self.wg = nn.Dense(
-            self.width,
-            dtype=self.dtype,
-            param_dtype=self.param_dtype,
-            use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.initializer_range),
-            precision=self.precision,
-        )
-
-    def setup_qkvo(self):
-        # Shared Q/K projection
-        self.wq = nn.Dense(
-            self.num_heads * self.head_dim,
-            dtype=self.dtype,
-            param_dtype=self.param_dtype,
-            use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.initializer_range),
-            precision=self.precision,
-        )
-        
-        # Separate convolutions for Q and K with caching support
-        if self.config.remat_conv != "":
-            conv_module = nn_partitioning.remat(
-                nn.Conv, policy=get_gradient_checkpoint_policy(self.config.remat_conv), prevent_cse=True
-            )
-        else:
-            conv_module = nn.Conv
-            
-        self.conv_q = conv_module(
-            self.config.hidden_size,
-            (self.config.conv_width,),
-            padding="CAUSAL",
-            feature_group_count=self.config.hidden_size,
-            dtype=self.dtype,
-            param_dtype=self.param_dtype,
-            precision=self.precision,
-        )
-        self.conv_k = conv_module(
-            self.config.hidden_size,
-            (self.config.conv_width,),
-            padding="CAUSAL",
-            feature_group_count=self.config.hidden_size,
-            dtype=self.dtype,
-            param_dtype=self.param_dtype,
-            precision=self.precision,
-        )
-        
-        # V projection
-        self.wv = nn.Dense(
-            self.num_heads * self.head_dim,
-            dtype=self.dtype,
-            param_dtype=self.param_dtype,
-            use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.initializer_range),
-            precision=self.precision,
-        )
-        
-        # Output projection
-        self.wo = nn.Dense(
-            self.width,
-            dtype=self.dtype,
-            param_dtype=self.param_dtype,
-            use_bias=False,
-            kernel_init=jax.nn.initializers.normal(self.config.initializer_range),
-            precision=self.precision,
-        )
-
-    def get_qkv_projections(self, batch):
-        """Get Q, K, V projections with efficient conv caching for shared Q/K."""
-        if hasattr(self, 'conv_q') and hasattr(self, 'conv_k'):
-            batch_size = batch.shape[0]
-            xqk, XV = self.wq(batch), self.wv(batch)
-            
-            # Apply convolutions with efficient caching
-            XQ = self._apply_causal_conv_with_cache(xqk, self.conv_q, 'conv_q_state', batch_size)
-            XK = self._apply_causal_conv_with_cache(xqk, self.conv_k, 'conv_k_state', batch_size)
-            
-            return XQ, XK, XV
-        else:
-            # Standard separate projections (retrocompatible fallback)
-            XQ, XK, XV = self.wq(batch), self.wk(batch), self.wv(batch)
-            return XQ, XK, XV
 
     def apply_gate(self, hidden_states, ttt_output):
         y = self.wg(hidden_states)
