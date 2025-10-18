@@ -43,6 +43,17 @@ We use WandB for logging training metrics and TTT statistics. After installing t
 wandb login
 ```
 
+### HuggingFace Token Setup
+If you plan to use HuggingFace datasets, you'll need to set up your HuggingFace token:
+
+1. Get your token from [HuggingFace Settings](https://huggingface.co/settings/tokens)
+2. Set it as an environment variable:
+   ```bash
+   export HF_TOKEN="your_token_here"
+   ```
+3. Alternatively, create a `.env` file in the project root (see `.env.example`)
+
+**Note:** Never commit your token to git. The `.gitignore` file already excludes `.env` files.
 
 ### Dataset Download
 Our Llama-2 tokenized datasets are available for download from Google Cloud Buckets:
