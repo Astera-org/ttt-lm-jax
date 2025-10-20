@@ -7,9 +7,9 @@
 DATA_PATH=""
 DATA_NAME="SaylorTwift/the_pile_books3_minus_gutenberg"
 SEQ_LEN=2048
-BS=64
+BS=32
 
-GRAD_ACCUM=4 # 256/256 = 1
+GRAD_ACCUM=8 # 256/256 = 1
 
 
 EXP_DIR=./current_exp
@@ -34,6 +34,7 @@ python3 -m ttt.train \
         --dataset_name=${DATA_NAME} \
         --seq_length=${SEQ_LEN} \
         --global_batch_size=${BS} \
+        --accum_steps=${GRAD_ACCUM} \
         --optimizer.type='adamw' \
         --optimizer.adamw_optimizer.weight_decay=0.1 \
         --optimizer.adamw_optimizer.lr=1.25e-3 \

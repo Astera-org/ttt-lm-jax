@@ -27,12 +27,13 @@ python3 -m ttt.train \
         --dtype='fp32' \
         --total_steps=50000 \
         --save_checkpoint_freq=200 \
-        --save_milestone_freq=200 \
+        --save_milestone_freq=2000 \
         --load_model_config='1b-TTT' \
         --update_model_config="dict(seq_modeling_block='ttt_linear', ttt_base_lr=1.0)" \
         --dataset_path=${DATA_PATH} \
         --dataset_name=${DATA_NAME} \
         --seq_length=${SEQ_LEN} \
+        --accum_steps=${GRAD_ACCUM} \
         --global_batch_size=${BS} \
         --optimizer.type='adamw' \
         --optimizer.adamw_optimizer.weight_decay=0.1 \
