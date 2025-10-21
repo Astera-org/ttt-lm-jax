@@ -7,9 +7,9 @@
 DATA_PATH=""
 DATA_NAME="SaylorTwift/the_pile_books3_minus_gutenberg"
 SEQ_LEN=2048
-BS=32
+BS=64
 
-GRAD_ACCUM=8 # 256/256 = 1
+GRAD_ACCUM=4 # 256/256 = 1
 
 # Experiment details
 
@@ -24,7 +24,7 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 python3 -m ttt.train \
         --mesh_dim='!-1,1,1' \
-        --dtype='fp32' \
+        --dtype='bfloat16' \
         --total_steps=50000 \
         --save_checkpoint_freq=200 \
         --save_milestone_freq=2000 \
