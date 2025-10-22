@@ -7,6 +7,9 @@ with optimized chunking for efficient computation and comprehensive debugging.
 """
 
 import os
+import hashlib
+import json
+import re
 import jax
 import jax.numpy as jnp
 from jax.sharding import Mesh, PartitionSpec as PS
@@ -55,6 +58,8 @@ FLAGS, FLAGS_DEF = mlxu.define_flags_with_default(
     tokens_per_book=16384*2,
     ppl_seq_size=2048,
     skip_start_chars=1024,
+    cache_books=True,
+    token_cache_dir="",
     debug_mode=False,
     # W&B integration flags
     use_wandb=True,
@@ -96,9 +101,9 @@ class TTTNormCalculator:
             
             def traverse_cache(tree: Any, depth: int = 0, path: str = "") -> None:
                 nonlocal total_norm_squared, total_elements, arrays_found
+                indent = "  " * depth
                 
                 if debug and depth < 4:  # Increased depth for FrozenDict
-                    indent = "  " * depth
                     print(f"[TTT_NORM] {indent}Traversing {path}: {type(tree).__name__}")
                 
                 # Handle FrozenDict specifically
@@ -242,21 +247,60 @@ class BookLoader:
     """Handles loading and tokenizing books for evaluation."""
     
     @staticmethod
+    def _tokenizer_signature(tokenizer: Any) -> str:
+        name = getattr(tokenizer, "name_or_path", tokenizer.__class__.__name__)
+        raw_signature = name
+        init_kwargs = getattr(tokenizer, "init_kwargs", None)
+        if init_kwargs:
+            try:
+                raw_signature += json.dumps(init_kwargs, sort_keys=True, default=str)
+            except TypeError:
+                raw_signature += repr(init_kwargs)
+        digest = hashlib.sha1(raw_signature.encode("utf-8")).hexdigest()[:8]
+        sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+        return f"{sanitized}_{digest}"
+
+    @staticmethod
+    def _cache_path(base_dir: Path, book_path: str, tokenizer_sig: str,
+                    tokens_per_book: int, skip_start_chars: int) -> Path:
+        book_id = Path(book_path).stem
+        file_name = (
+            f"{book_id}__{tokenizer_sig}__tpb{tokens_per_book}__"
+            f"skip{skip_start_chars}.npy"
+        )
+        return base_dir / file_name
+
+    @staticmethod
+    def _load_cached_tokens(cache_path: Path) -> Optional[np.ndarray]:
+        try:
+            tokens = np.load(cache_path, allow_pickle=False)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(tokens, np.ndarray) or tokens.ndim != 1:
+            return None
+        return tokens.astype(np.int32, copy=False)
+
+    @staticmethod
+    def _write_tokens_to_cache(cache_path: Path, tokens: np.ndarray) -> None:
+        tmp_path = cache_path.with_name(cache_path.name + ".tmp")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(tmp_path, "wb") as handle:
+                np.save(handle, tokens.astype(np.int32, copy=False))
+            os.replace(tmp_path, cache_path)
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+
+    @staticmethod
     def load_books(books_dir: str, tokenizer: Any, num_books: int, 
-                   tokens_per_book: int, skip_start_chars: int = 1024) -> List[Tuple[str, str]]:
-        """
-        Load books that meet the token requirements.
-        
-        Args:
-            books_dir: Directory containing book text files
-            tokenizer: Tokenizer for counting tokens
-            num_books: Number of books to load
-            tokens_per_book: Minimum tokens required per book
-            skip_start_chars: Characters to skip at beginning of each book
-            
-        Returns:
-            List of (book_id, book_text) tuples
-        """
+                   tokens_per_book: int, skip_start_chars: int = 1024,
+                   cache_tokens: bool = True,
+                   token_cache_dir: Optional[str] = None) -> List[Tuple[str, np.ndarray]]:
+        """Load eligible books and optionally cache their tokenized form."""
         print(f"[BOOKS] Loading books from {books_dir}")
         book_files = list(glob.glob(os.path.join(books_dir, "*.txt")))
         
@@ -267,6 +311,15 @@ class BookLoader:
         print(f"[BOOKS] Found {len(book_files)} book files")
         random.shuffle(book_files)
         
+        cache_dir: Optional[Path] = None
+        tokenizer_sig = ""
+        if cache_tokens:
+            if token_cache_dir:
+                cache_dir = Path(token_cache_dir).expanduser().resolve()
+            else:
+                cache_dir = Path(books_dir).resolve() / ".token_cache"
+            tokenizer_sig = BookLoader._tokenizer_signature(tokenizer)
+
         books = []
         attempted = 0
         skipped = 0
@@ -278,36 +331,56 @@ class BookLoader:
             book_id = Path(filepath).stem
             attempted += 1
             
+            cache_path: Optional[Path] = None
+            if cache_dir is not None:
+                cache_path = BookLoader._cache_path(cache_dir, filepath, tokenizer_sig,
+                                                    tokens_per_book, skip_start_chars)
+                if cache_path.exists():
+                    cached_tokens = BookLoader._load_cached_tokens(cache_path)
+                    if cached_tokens is not None and cached_tokens.shape[0] >= tokens_per_book:
+                        tokens = cached_tokens[:tokens_per_book]
+                        books.append((book_id, tokens))
+                        print(f"[BOOKS] Loaded {book_id} from cache: {tokens.shape[0]} tokens (using {tokens_per_book})")
+                        continue
+                    else:
+                        try:
+                            cache_path.unlink()
+                        except OSError:
+                            pass
+
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     book_text = f.read()
-                
-                # Skip beginning characters (often metadata)
+
                 book_text = book_text[skip_start_chars:]
-                
-                # Quick length check before tokenization
-                if len(book_text) < tokens_per_book * 4:  # Rough estimate
+
+                if len(book_text) < tokens_per_book * 4:
                     print(f"[BOOKS] Skipping {book_id}: too short (estimated)")
                     skipped += 1
                     continue
-                
-                # Tokenize to get exact count
+
                 tokenized = tokenizer(
-                    book_text, 
-                    return_tensors="np", 
+                    book_text,
+                    return_tensors="np",
                     return_attention_mask=False,
                     max_length=tokens_per_book,
-                    truncation=True
+                    truncation=True,
                 )
-                token_count = tokenized.input_ids.shape[1]
-                
+                token_count = int(tokenized.input_ids.shape[1])
+
                 if token_count >= tokens_per_book:
-                    books.append((book_id, book_text))
+                    tokens = np.asarray(tokenized.input_ids[0], dtype=np.int32)[:tokens_per_book]
+                    books.append((book_id, tokens))
                     print(f"[BOOKS] Loaded {book_id}: {token_count} tokens (using {tokens_per_book})")
+                    if cache_path is not None:
+                        try:
+                            BookLoader._write_tokens_to_cache(cache_path, tokens)
+                        except OSError as cache_err:
+                            print(f"[BOOKS] Warning: failed to cache tokens for {book_id}: {cache_err}")
                 else:
                     print(f"[BOOKS] Skipping {book_id}: {token_count} tokens (need {tokens_per_book})")
                     skipped += 1
-                    
+
             except Exception as e:
                 print(f"[BOOKS] Error loading {filepath}: {e}")
                 skipped += 1
@@ -371,7 +444,15 @@ class PerplexityCalculator:
             print(f"[CALC] Chunk {chunk_count}: {chunk_start}:{chunk_end} ({original_chunk_len} tokens)")
             
             # Pad chunk if necessary
-            padded_chunk = self._pad_chunk(chunk, original_chunk_len)
+            padded_chunk, attention_mask, valid_chunk_len = self._pad_chunk(chunk)
+
+            if self.debug and valid_chunk_len < original_chunk_len:
+                print(f"[CALC] Truncated chunk {chunk_count} from {original_chunk_len} to {valid_chunk_len} tokens to match max sequence length")
+
+            if valid_chunk_len <= 1:
+                if self.debug:
+                    print(f"[CALC] Skipping chunk {chunk_count}: effective length {valid_chunk_len}")
+                continue
             
             # Forward pass
             try:
@@ -379,7 +460,13 @@ class PerplexityCalculator:
                 rng = JaxRNG(global_next_rng())
                 model_rngs = rng(self.model.config.rng_keys())
                 
-                model_outputs, updated_vars = self.compiled_fn(params, padded_chunk, current_cache, model_rngs)
+                model_outputs, updated_vars = self.compiled_fn(
+                    params,
+                    padded_chunk,
+                    attention_mask,
+                    current_cache,
+                    model_rngs
+                )
                 
                 # Extract TTT norm
                 ttt_norm = None
@@ -394,8 +481,8 @@ class PerplexityCalculator:
                 
                 # Calculate perplexities for subsequences within this chunk
                 chunk_results = self._calculate_chunk_perplexities(
-                    model_outputs.logits[:, :original_chunk_len],
-                    chunk[:, :original_chunk_len],
+                    model_outputs.logits[:, :valid_chunk_len],
+                    chunk[:, :valid_chunk_len],
                     chunk_start,
                     ppl_seq_size,
                     ttt_norm
@@ -429,14 +516,35 @@ class PerplexityCalculator:
             'calc_time': calc_time
         }
     
-    def _pad_chunk(self, chunk: jnp.ndarray, original_len: int) -> jnp.ndarray:
-        """Pad chunk to model's expected sequence length."""
+    def _pad_chunk(self, chunk: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray, int]:
+        """Pad or trim a chunk to the model's expected length and build an attention mask."""
         max_len = self.model_config.max_sequence_length
-        if original_len < max_len:
-            padding_len = max_len - original_len
-            padding = jnp.full((1, padding_len), self.model_config.pad_token_id, dtype=chunk.dtype)
-            return jnp.concatenate([chunk, padding], axis=1)
-        return chunk
+        batch_size, original_len = chunk.shape
+
+        # Trim sequences that exceed the compiled length
+        effective_len = min(original_len, max_len)
+        trimmed_chunk = chunk[:, :effective_len]
+
+        if effective_len < max_len:
+            padding_len = max_len - effective_len
+            padding = jnp.full(
+                (batch_size, padding_len),
+                self.model_config.pad_token_id,
+                dtype=chunk.dtype
+            )
+            padded_chunk = jnp.concatenate([trimmed_chunk, padding], axis=1)
+            attention_mask = jnp.concatenate(
+                [
+                    jnp.ones((batch_size, effective_len), dtype=jnp.int32),
+                    jnp.zeros((batch_size, padding_len), dtype=jnp.int32)
+                ],
+                axis=1
+            )
+        else:
+            padded_chunk = trimmed_chunk
+            attention_mask = jnp.ones((batch_size, max_len), dtype=jnp.int32)
+
+        return padded_chunk, attention_mask, effective_len
     
     def _update_cache(self, updated_vars: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Extract cache variables for next iteration."""
@@ -481,9 +589,10 @@ class PerplexityCalculator:
                 continue
             
             # Cross entropy calculation
-            log_probs = jax.nn.log_softmax(shift_logits, axis=-1)
-            one_hot_labels = jax.nn.one_hot(shift_labels, self.model_config.vocab_size)
-            cross_entropy = -jnp.sum(one_hot_labels * log_probs, axis=-1)
+            cross_entropy = optax.softmax_cross_entropy_with_integer_labels(
+                shift_logits,
+                shift_labels
+            )
             
             # Perplexity
             ce_sum = jnp.sum(cross_entropy)
@@ -1221,16 +1330,17 @@ def compile_model_function(mesh: Any, model: Any, params_sharding_spec: Any) -> 
     """Compile the model forward function."""
     print("[COMPILE] Compiling model function...")
     
-    def model_forward_fn(params, inputs, cache_variables, model_rngs):
+    def model_forward_fn(params, inputs, attention_mask, cache_variables, model_rngs):
         variables = {'params': params}
-        
+
         if cache_variables is not None:
-            for cache_type, cache_variables in cache_variables.items():
-                variables[cache_type] = cache_variables
-        
+            for cache_type, cache_value in cache_variables.items():
+                variables[cache_type] = cache_value
+
         return model.apply(
             variables,
             input_ids=inputs,
+            attention_mask=attention_mask,
             deterministic=True,
             mutable=['ttt_cache', 'conv_cache', 'pre_conv_cache', 
             "mini_batch_counter",
@@ -1242,7 +1352,7 @@ def compile_model_function(mesh: Any, model: Any, params_sharding_spec: Any) -> 
     with mesh:
         compiled_fn = pjit.pjit(
             model_forward_fn,
-            in_shardings=(params_sharding_spec, PS(), PS(), PS()),
+            in_shardings=(params_sharding_spec, PS(), PS(), PS(), PS()),
             out_shardings=(PS(), PS())
         )
     
@@ -1260,6 +1370,7 @@ def debug_ttt_functionality(mesh: Any, model: Any, model_config: Any,
     test_text = "The quick brown fox jumps over the lazy dog. " * 10
     test_tokens = tokenizer(test_text, return_tensors="np", return_attention_mask=False)
     test_input = jnp.array(test_tokens.input_ids)
+    original_len = test_input.shape[1]
     
     if test_input.ndim == 1:
         test_input = jnp.expand_dims(test_input, axis=0)
@@ -1269,6 +1380,15 @@ def debug_ttt_functionality(mesh: Any, model: Any, model_config: Any,
         padding_len = model_config.max_sequence_length - test_input.shape[1]
         padding = jnp.full((1, padding_len), model_config.pad_token_id, dtype=test_input.dtype)
         test_input = jnp.concatenate([test_input, padding], axis=1)
+        attention_mask = jnp.concatenate(
+            [
+                jnp.ones((1, original_len), dtype=jnp.int32),
+                jnp.zeros((1, padding_len), dtype=jnp.int32)
+            ],
+            axis=1
+        )
+    else:
+        attention_mask = jnp.ones((1, test_input.shape[1]), dtype=jnp.int32)
     
     print(f"[DEBUG] Test input shape: {test_input.shape}")
     
@@ -1283,7 +1403,7 @@ def debug_ttt_functionality(mesh: Any, model: Any, model_config: Any,
             rng = JaxRNG(global_next_rng())
             model_rngs = rng(model.config.rng_keys())
             
-            outputs1, vars1 = compiled_fn(params, test_input, None, model_rngs)
+            outputs1, vars1 = compiled_fn(params, test_input, attention_mask, None, model_rngs)
             
             print(f"[DEBUG] Output type: {type(outputs1)}")
             print(f"[DEBUG] Variables keys: {list(vars1.keys())}")
@@ -1336,7 +1456,7 @@ def debug_ttt_functionality(mesh: Any, model: Any, model_config: Any,
                 rng2 = JaxRNG(global_next_rng())
                 model_rngs2 = rng2(model.config.rng_keys())
                 
-                outputs2, vars2 = compiled_fn(params, test_input, cache, model_rngs2)
+                outputs2, vars2 = compiled_fn(params, test_input, attention_mask, cache, model_rngs2)
                 if 'ttt_cache' in vars2:
                     print("[DEBUG] TTT cache from second pass:")
                     norm_calc.inspect_frozen_dict_structure(vars2['ttt_cache'], max_depth=3)
@@ -1555,7 +1675,9 @@ def main(argv):
     # Load books
     books = BookLoader.load_books(
         FLAGS.books_dir, tokenizer, FLAGS.num_books, 
-        FLAGS.tokens_per_book, FLAGS.skip_start_chars
+        FLAGS.tokens_per_book, FLAGS.skip_start_chars,
+        cache_tokens=FLAGS.cache_books,
+        token_cache_dir=FLAGS.token_cache_dir or None,
     )
     
     if not books:
@@ -1575,12 +1697,10 @@ def main(argv):
     book_results = []
     
     with mesh:
-        for book_idx, (book_id, book_text) in enumerate(books):
+        for book_idx, (book_id, book_tokens) in enumerate(books):
             print(f"\n[MAIN] Book {book_idx+1}/{len(books)}: {book_id}")
             
-            # Tokenize
-            tokenized = tokenizer(book_text, return_tensors="np", return_attention_mask=False)
-            input_ids = jnp.array(tokenized.input_ids)
+            input_ids = jnp.array(book_tokens[None, :], dtype=jnp.int32)
             
             # Calculate perplexity and norms
             result = perplexity_calculator.calculate_book_perplexity(

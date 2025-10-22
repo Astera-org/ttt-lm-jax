@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script to find the 64 longest books from Project Gutenberg.
+Script to find the longest books from Project Gutenberg.
 Downloads book metadata, analyzes lengths, and identifies the longest books.
 """
 
@@ -18,7 +18,7 @@ import pickle
 DATA_DIR = Path("./data/gutenberg")
 CACHE_DIR = DATA_DIR / "cache"
 METADATA_FILE = DATA_DIR / "book_metadata.json"
-RESULTS_FILE = DATA_DIR / "longest_64_books.json"
+DEFAULT_RESULTS_FILENAME = "longest_{top_n}_books.json"
 CACHE_FILE = CACHE_DIR / "book_lengths_cache.pkl"
 
 def load_cache() -> Dict[int, Tuple[str, int]]:
@@ -144,7 +144,7 @@ def scan_all_books(max_book_id: int = 75000, cache: Optional[Dict[int, Tuple[str
     print(f"\nTotal: {len(results)} books found, {failed} failed")
     return results
 
-def find_longest_books(sample_results: List[Tuple[int, str, int]], top_n: int = 64) -> List[Dict]:
+def find_longest_books(sample_results: List[Tuple[int, str, int]], top_n: int = 200) -> List[Dict]:
     """
     Find the longest books from the sample.
     """
@@ -179,7 +179,7 @@ def save_results(longest_books: List[Dict], output_file: Path):
 def print_results(longest_books: List[Dict]):
     """Print the results in a nice format."""
     print("\n" + "="*80)
-    print(f"TOP 64 LONGEST BOOKS FROM PROJECT GUTENBERG")
+    print(f"TOP {len(longest_books)} LONGEST BOOKS FROM PROJECT GUTENBERG")
     print("="*80 + "\n")
     
     for book in longest_books:
@@ -228,20 +228,22 @@ def main():
     """Main function."""
     import argparse
     
-    parser = argparse.ArgumentParser(description="Find the 64 longest books from Project Gutenberg")
+    parser = argparse.ArgumentParser(description="Find the longest books from Project Gutenberg")
     parser.add_argument("--max-book-id", type=int, default=75000, 
                        help="Maximum book ID to check (default: 75000)")
-    parser.add_argument("--top-n", type=int, default=64,
-                       help="Number of longest books to find (default: 64)")
+    parser.add_argument("--top-n", type=int, default=200,
+                       help="Number of longest books to find (default: 200)")
     parser.add_argument("--download", action="store_true",
                        help="Download the actual book files")
     parser.add_argument("--output-dir", type=str, default="./data/gutenberg",
                        help="Output directory for downloaded books")
     parser.add_argument("--clear-cache", action="store_true",
                        help="Clear the cache and start fresh")
+    parser.add_argument("--cache-only", action="store_true",
+                       help="Use existing cache without downloading new books")
     
     args = parser.parse_args()
-    
+
     # Clear cache if requested
     if args.clear_cache:
         if CACHE_FILE.exists():
@@ -250,9 +252,17 @@ def main():
     
     # Load cache
     cache = load_cache()
-    
-    # Scan all books
-    book_data = scan_all_books(args.max_book_id, cache)
+
+    if args.cache_only:
+        book_data = [
+            (book_id, title, char_count)
+            for book_id, (title, char_count) in cache.items()
+            if book_id <= args.max_book_id
+        ]
+        print(f"Using {len(book_data)} books from cache only")
+    else:
+        # Scan all books
+        book_data = scan_all_books(args.max_book_id, cache)
     
     # Find the longest books
     longest_books = find_longest_books(book_data, args.top_n)
@@ -262,7 +272,8 @@ def main():
     
     # Save results
     output_dir = Path(args.output_dir)
-    save_results(longest_books, output_dir / "longest_64_books.json")
+    results_filename = DEFAULT_RESULTS_FILENAME.format(top_n=args.top_n)
+    save_results(longest_books, output_dir / results_filename)
     
     # Download books if requested
     if args.download:
